@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.DS_Store
+
+# Google oturum cookie bilgileri - paylasilmamali
+sessions/
+
+# Gecici ekran goruntuleri
+screenshots/
+
+# SQLite gecici WAL/SHM dosyalari
+*.db-wal
+*.db-shm

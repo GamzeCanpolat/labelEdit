@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Google Maps Etiketleme ve Kontrol Portalı — Excel dosya yükleme ve SQLite üzerinden Excel dosya seçimi." />
+  <title>Ana Sayfa — Excel Yükleme ve Seçimi</title>
+  <link rel="stylesheet" href="/static/style.css?v=20261027-focus" />
+</head>
+<body>
+
+<div id="app">
+
+  <!-- ═══ HEADER ═══════════════════════════════════════════════════════════ -->
+  <header id="header">
+    <div class="header-brand" style="gap:10px;">
+      <div style="display:flex;align-items:baseline;gap:1px;">
+        <span style="font-size:18px;font-weight:800;color:#fff;letter-spacing:-0.5px;font-family:'Inter',sans-serif;">mapin</span>
+        <span style="font-size:12px;font-weight:500;color:rgba(255,255,255,0.55);letter-spacing:0.5px;font-family:'Inter',sans-serif;margin-left:4px;">data</span>
+      </div>
+      <div style="border-left:1px solid rgba(255,255,255,0.15);padding-left:10px;">
+        <div class="brand-sub">Google Maps Etiketleme ve Kontrol</div>
+      </div>
+    </div>
+
+    <!-- Navigasyon -->
+    <div class="header-actions">
+      <a href="/islem" class="btn-hero-action btn-hero-action--green" style="padding: 8px 18px; font-size: 13px; text-decoration: none;" title="İşlem Sayfasına Geç">
+        ⚡ İşlem Sayfası (Tut / Sil / Atla) &rarr;
+      </a>
+    </div>
+  </header>
+
+  <!-- ═══ MAIN CONTENT: SADECE YÜKLEME VE SEÇİM ════════════════════════════ -->
+  <main class="home-container" style="max-width: 1040px; margin: 36px auto; height: auto;">
+    <div class="home-grid" style="grid-template-columns: 1fr 1.25fr; gap: 32px; align-items: stretch;">
+
+      <!-- 1. Excel Dosyası Yükleme Bölümü -->
+      <section class="home-panel" style="display: flex; flex-direction: column; justify-content: space-between;">
+        <div>
+          <div class="home-panel-header">
+            <div class="home-panel-title-wrap">
+              <span class="home-panel-icon">📤</span>
+              <div>
+                <h2 class="home-panel-title">Excel Dosyası Yükle</h2>
+                <div class="home-panel-sub">Yeni bir Excel dosyasını SQLite'a yükleyin</div>
+              </div>
+            </div>
+          </div>
+
+          <form id="home-upload-form">
+            <!-- Sürükle Bırak Alanı -->
+            <div id="home-drop-zone" class="home-drop-zone" title="Dosya seçmek için tıklayın">
+              <div class="home-drop-icon">📥</div>
+              <div class="home-drop-title">Excel (.xlsx, .xlsm, .csv) dosyası seçin</div>
+              <div class="home-drop-subtitle">Sürükleyip bırakabilir veya tıklayabilirsiniz</div>
+              <button type="button" class="btn btn-secondary btn-sm" style="pointer-events: none;">Dosya Seç</button>
+              <input type="file" id="home-file-input" accept=".xlsx,.xlsm,.csv" style="display: none;" />
+            </div>
+
+            <!-- Seçilen Dosya Rozeti -->
+            <div id="home-selected-file-badge" class="home-selected-badge hidden"></div>
+
+            <!-- Çalışma Ortamı Adı -->
+            <div style="margin-top: 18px;">
+              <label for="home-upload-name" style="display: block; font-size: 12px; font-weight: 600; margin-bottom: 6px; color: var(--text-secondary);">
+                Çalışma Adı (İsteğe Bağlı)
+              </label>
+              <input
+                type="text"
+                id="home-upload-name"
+                class="form-input"
+                placeholder="Dosya adı otomatik kullanılır"
+                autocomplete="off"
+              />
+            </div>
+
+            <!-- Yükle Butonu -->
+            <div style="margin-top: 22px;">
+              <button type="submit" id="home-upload-btn" class="btn btn-primary" style="width: 100%; padding: 13px; font-size: 14px; font-weight: 700;" disabled>
+                🚀 Yükle ve SQLite'a Kaydet
+              </button>
+            </div>
+          </form>
+        </div>
+      </section>
+
+      <!-- 2. Excel Dosyası Seçimi Bölümü (SQLite) -->
+      <section class="home-panel" style="display: flex; flex-direction: column; justify-content: space-between;">
+        <div>
+          <div class="home-panel-header">
+            <div class="home-panel-title-wrap">
+              <span class="home-panel-icon">📁</span>
+              <div>
+                <h2 class="home-panel-title">Excel Dosyası Seçimi (SQLite)</h2>
+                <div class="home-panel-sub">SQLite veritabanından okunan mevcut Excel dosyaları</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Açılır Seçim Listesi (Dropdown) -->
+          <div style="margin-bottom: 18px;">
+            <label for="ws-select-dropdown" style="display: block; font-size: 12px; font-weight: 600; margin-bottom: 8px; color: var(--text-secondary);">
+              İşlem Yapılacak Excel Dosyasını Seçin:
+            </label>
+            <select id="ws-select-dropdown" class="form-select" style="font-size: 14px; padding: 12px; border-radius: var(--radius-md); font-weight: 600;">
+              <option value="">SQLite taranıyor...</option>
+            </select>
+          </div>
+
+          <!-- Seçili Dosya Bilgi & İstatistik Kartı -->
+          <div id="selected-ws-details" style="min-height: 190px;">
+            <div style="text-align: center; padding: 30px; color: var(--text-muted);">
+              Yükleniyor...
+            </div>
+          </div>
+        </div>
+
+        <!-- İşleme Başla Butonu -->
+        <div style="margin-top: 22px;">
+          <button id="btn-start-process" class="btn-hero-action btn-hero-action--green" style="width: 100%; justify-content: center; padding: 14px; font-size: 15px; border-radius: var(--radius-md);" onclick="HomeApp.startProcessing()">
+            <span>⚡</span> Seçili Dosyayla İşleme Başla (Tut / Sil / Atla) &rarr;
+          </button>
+        </div>
+      </section>
+
+    </div>
+  </main>
+
+</div>
+
+<div id="toast-container"></div>
+
+<!-- Workspace ve Sütun Eşleştirme Modalları İstemcisi -->
+<script src="/static/workspace_client.js?v=20261027-focus"></script>
+<!-- Ana Sayfa Orkestrasyonu -->
+<script src="/static/home_app.js?v=20261027-focus"></script>
+
+</body>
+</html>
