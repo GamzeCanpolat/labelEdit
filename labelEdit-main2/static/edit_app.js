@@ -31,6 +31,7 @@ class EditStateManager {
       nextName:        '',
       sourceCompleted: false,
       backStack:       [], // Geri gitme için önceki kayıtlar
+      forwardStack:    [],
     };
   }
   get(key)        { return this._state[key]; }
@@ -68,11 +69,17 @@ class EditApiClient {
     return res.json();
   }
 
-  async sendAction(rowIndex, action) {
+  async getFieldOptions() {
+    const res = await fetch(`${this._base}/api/edit/field-options`);
+    if (!res.ok) throw new Error('Marka ve kategori seçenekleri alınamadı.');
+    return res.json();
+  }
+
+  async sendAction(rowIndex, action, fields = {}) {
     const res = await fetch(`${this._base}/api/edit/action`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ row_index: rowIndex, action }),
+      body: JSON.stringify({ row_index: rowIndex, action, fields }),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
@@ -155,6 +162,46 @@ class EditUIController {
     this.skipBtn            = document.getElementById('skip-btn');
     this.keepBtn            = document.getElementById('keep-btn');
     this.actionHint         = document.getElementById('action-hint');
+    this.editFields = {
+      brand: document.getElementById('edit-brand'),
+      main_category: document.getElementById('edit-main-category'),
+      sub_category: document.getElementById('edit-sub-category'),
+    };
+    this.brandSelectBtn = document.getElementById('brand-select-btn');
+    this.poiState = document.getElementById('edit-poi-state');
+  }
+
+  setFieldOptions(options) {
+    const lists = { brand: 'brand-options', main_category: 'main-category-options', sub_category: 'sub-category-options' };
+    for (const [key, id] of Object.entries(lists)) {
+      const list = document.getElementById(id);
+      list.replaceChildren(...(options[key] || []).map(value => new Option(value, value)));
+    }
+  }
+
+  getFieldValues() {
+    return Object.fromEntries(Object.entries(this.editFields).map(([key, input]) => [key, input.value.trim()]));
+  }
+
+  updateFields(fields = {}) {
+    for (const [key, input] of Object.entries(this.editFields)) input.value = fields[key] || '';
+    const raw = String(fields.poi_state || '').trim();
+    const state = raw.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .replace(/ı/g, 'i').replace(/[_-]+/g, ' ').replace(/\s+/g, ' ');
+    let label = raw || 'Bilgi yok';
+    let kind = '';
+    if (['open', 'operational', 'acik', 'active'].includes(state)) {
+      label = 'Açık'; kind = 'open';
+    } else if (['closed temporarily', 'temporarily closed', 'gecici olarak kapali'].includes(state)) {
+      label = 'Geçici olarak kapalı'; kind = 'closed';
+    } else if (['closed permanently', 'permanently closed', 'kalici olarak kapali'].includes(state)) {
+      label = 'Kalıcı olarak kapalı'; kind = 'closed';
+    } else if (['closed', 'kapali', 'inactive'].includes(state)) {
+      label = 'Kapalı'; kind = 'closed';
+    }
+    this.poiState.textContent = label;
+    this.poiState.dataset.state = kind;
+    this.poiState.title = raw;
   }
 
   /* -- Oturum Başlangıcı */
@@ -264,6 +311,8 @@ class EditUIController {
 
   /* -- İşlem durumu */
   setActionsLoading(loading) {
+    for (const input of Object.values(this.editFields)) input.disabled = loading;
+    this.brandSelectBtn.disabled = loading;
     this.deleteBtn.disabled = loading;
     this.skipBtn.disabled   = loading;
     this.keepBtn.disabled   = loading;
@@ -306,6 +355,8 @@ class EditUIController {
 
   /* -- Tamamlandı */
   showCompleted(deletedCount, keptCount, skippedCount) {
+    for (const input of Object.values(this.editFields)) input.disabled = true;
+    this.brandSelectBtn.disabled = true;
     this.completedSub.textContent =
       `${deletedCount} silindi, ${skippedCount || 0} atlandı, ${keptCount} tutuldu.`;
     this.completedScreen.classList.add('visible');
@@ -341,7 +392,8 @@ class EditKeyboardHandler {
       if (!this._enabled) return;
 
       const target = e.target;
-      const isInput = target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA');
+      const isInput = target && (['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON'].includes(target.tagName) || target.isContentEditable);
+      if (isInput) return;
 
       // Geri Dön: Alt + Sol Ok, Backspace (input dışında) veya Ctrl + Z
       if ((e.altKey && e.key === 'ArrowLeft') || (e.ctrlKey && (e.key === 'z' || e.key === 'Z')) || (!isInput && e.key === 'Backspace')) {
@@ -426,6 +478,11 @@ class EditApp {
     this._ui.keepBtn.addEventListener('click', () => this._handleKeep());
     if (this._ui.backBtn) this._ui.backBtn.addEventListener('click', () => this._handleBack());
     this._ui.openUrlBtn.addEventListener('click', () => this._handleOpenUrl());
+    this._ui.brandSelectBtn.addEventListener('click', () => {
+      const input = this._ui.editFields.brand;
+      input.focus();
+      try { input.showPicker?.(); } catch (_) { /* Yazı alanından da seçim yapılabilir. */ }
+    });
     this._ui.urlPreview.addEventListener('click', () => {
       const url = this._ui.urlPreview.dataset.url;
       if (url) navigator.clipboard.writeText(url).then(() => this._toast.success('URL kopyalandı!'));
@@ -447,6 +504,11 @@ class EditApp {
     this._ui.showStartLoading();
     try {
       const data = await this._api.startSession(startIndex, wsId);
+      try {
+        this._ui.setFieldOptions(await this._api.getFieldOptions());
+      } catch (err) {
+        this._toast.error(`${err.message} Alanlara elle yazabilirsiniz.`);
+      }
       this._state.update({ isStarted: true, totalPending: data.pending });
       this._ui.hideStartScreen();
       this._ui.activateUI();
@@ -467,7 +529,7 @@ class EditApp {
     this._ui.setActionsLoading(true);
 
     try {
-      const data = await this._api.getNextScreenshot();
+      const data = this._state.get('forwardStack').pop() || await this._api.getNextScreenshot();
       if (data.status === 'completed') {
         this._state.set('sourceCompleted', true);
         this._ui.showCompleted(
@@ -481,7 +543,7 @@ class EditApp {
     } catch (err) {
       this._toast.error(`Screenshot alınamadı: ${err.message}`);
       this._ui.hideLoading();
-      this._ui.setActionsLoading(false);
+      this._ui.setActionsLoading(!this._state.get('currentItem'));
     } finally {
       this._isTransitioning = false;
     }
@@ -489,6 +551,7 @@ class EditApp {
 
   _showItem(item) {
     if (!item) return;
+    this._ui.updateFields(item.fields);
     this._state.update({
       currentItem:     item,
       currentRowIndex: item.row_index,
@@ -586,7 +649,9 @@ class EditApp {
     this._isActing = true;
     this._ui.setActionsLoading(true);
     try {
-      await this._api.sendAction(rowIndex, 'keep');
+      const fields = this._ui.getFieldValues();
+      await this._api.sendAction(rowIndex, 'keep', fields);
+      current.fields = { ...current.fields, ...fields };
       const name = this._state.get('currentName');
       this._ui.addHistory(name, 'keep');
       this._state.set('keptCount', this._state.get('keptCount') + 1);
@@ -615,13 +680,16 @@ class EditApp {
       return;
     }
 
-    const { item, action } = backStack.pop();
-    this._ui.setBackEnabled(backStack.length > 0);
+    const { item, action } = backStack[backStack.length - 1];
+    this._isActing = true;
 
     try {
       this._ui.setActionsLoading(true);
       // Backend'deki işlemi geri al
       await this._api.undoAction(item.row_index);
+      backStack.pop();
+      const current = this._state.get('currentItem');
+      if (current) this._state.get('forwardStack').push(current);
 
       // İstatistikleri düşür
       if (action === 'delete') {
@@ -642,6 +710,8 @@ class EditApp {
     } catch (err) {
       this._toast.error(`Geri alma hatası: ${err.message}`);
       this._ui.setActionsLoading(false);
+    } finally {
+      this._isActing = false;
     }
   }
 

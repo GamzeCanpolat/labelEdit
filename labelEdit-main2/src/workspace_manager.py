@@ -35,6 +35,7 @@ from data_model import (
     parse_maps_url,
 )
 from excel_schema import detect_columns, normalize_header, unique_columns
+from edit_fields import field_columns, read_fields, read_options, write_fields
 
 logger = logging.getLogger(__name__)
 
@@ -895,7 +896,23 @@ class WorkspaceManager:
         with self._lock, self._get_registry_conn() as conn:
             conn.execute("UPDATE workspaces SET updated_at=? WHERE id=?", (datetime.now().isoformat(), ws_id))
 
-    def update_action(self, ws_id: str, row_index: int, action: str) -> None:
+    def get_edit_fields(self, ws_id: str, row_index: int) -> dict:
+        ws = self.get_workspace(ws_id)
+        if not ws:
+            raise KeyError("Çalışma ortamı bulunamadı.")
+        with self._lock, self._get_workspace_conn(ws_id) as conn:
+            table, index_col, _ = self._get_table_info(conn)
+            return read_fields(conn, table, index_col, ws["columns"], row_index)
+
+    def get_edit_options(self, ws_id: str) -> dict:
+        ws = self.get_workspace(ws_id)
+        if not ws:
+            raise KeyError("Çalışma ortamı bulunamadı.")
+        with self._lock, self._get_workspace_conn(ws_id) as conn:
+            table, _, _ = self._get_table_info(conn)
+            return read_options(conn, table, ws["columns"])
+
+    def update_action(self, ws_id: str, row_index: int, action: str, fields: Optional[dict] = None) -> None:
         """
         Düzenle akışı aksiyonu (tut, sil, atla) doğrudan SQLite tablosuna yazılır.
         """
@@ -919,12 +936,20 @@ class WorkspaceManager:
         now_iso = datetime.now().isoformat()
         with self._lock, self._get_workspace_conn(ws_id) as conn:
             table_name, row_idx_col, status_col_name = self._get_table_info(conn)
+            read_fields(conn, table_name, row_idx_col, ws["columns"], row_index)
+            if action_clean == "keep":
+                added = write_fields(conn, table_name, row_idx_col, ws["columns"], row_index, fields or {})
+                # Eski edit veritabanları dışa aktarma için sütun listesini meta'da tutar.
+                if added and table_name == "mekanlar":
+                    conn.execute("INSERT OR REPLACE INTO meta VALUES (?,?)",
+                                 ("columns", json.dumps(ws["columns"] + added, ensure_ascii=False)))
             cur_cols = [r["name"] for r in conn.execute(f"PRAGMA table_info({_safe_sql_col(table_name)})").fetchall()]
             has_updated_at = "_updated_at" in cur_cols
 
             set_parts = [f"{_safe_sql_col(status_col_name)}=?"]
             vals = [db_status]
-            if status_col and status_col in ws["columns"] and status_col != status_col_name:
+            if (status_col and status_col in ws["columns"] and status_col != status_col_name
+                    and status_col != field_columns(ws["columns"])["poi_state"]):
                 set_parts.append(f"{_safe_sql_col(status_col)}=?")
                 vals.append(db_status)
             if has_updated_at:

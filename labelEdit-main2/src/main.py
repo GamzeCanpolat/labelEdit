@@ -37,6 +37,7 @@ from config import SCREENSHOTS_DIR, STATIC_DIR, HOST, PORT, BUFFER_SIZE, list_in
 from data_manager import DataManager
 from data_model import ColumnDetectionError
 from edit_data_manager import EditDataManager, export_excel
+from edit_fields import validate_fields
 from excel_schema import scan_input_dir
 from session_manager import SessionManager, current_engine
 from screenshot_worker import ScreenshotWorker, ScreenshotItem
@@ -71,6 +72,7 @@ class AppState:
     edit_current_position: int = 0
     edit_current_item: Optional[ScreenshotItem] = None
     edit_is_started: bool = False
+    edit_workspace_id: Optional[str] = None
 
 
 state = AppState()
@@ -173,6 +175,7 @@ class SessionStartResponse(BaseModel):
 class EditActionRequest(BaseModel):
     row_index: int
     action: str   # "delete" | "keep" | "skip"
+    fields: Dict[str, str] = Field(default_factory=dict)
 
 
 class EditUndoRequest(BaseModel):
@@ -610,6 +613,7 @@ async def label_page():
 async def edit_start_session(request: Optional[SessionStartRequest] = None):
     request = request or SessionStartRequest()
     await _stop_edit_flow(close_data=True)
+    state.edit_workspace_id = None
 
     try:
         start_index = request.start_index
@@ -620,7 +624,7 @@ async def edit_start_session(request: Optional[SessionStartRequest] = None):
             if not ws:
                 raise HTTPException(status_code=404, detail=f"Çalışma ortamı bulunamadı: {ws_id}")
 
-            state.active_workspace_id = ws_id
+            state.edit_workspace_id = ws_id
             all_records = await run_in_threadpool(workspace_mgr.get_place_records, ws_id, start_index)
             pending_count = len(all_records)
             if pending_count == 0:
@@ -700,7 +704,25 @@ async def edit_get_next_screenshot():
     resp = _item_response(item, worker)
     resp["kontrol_value"] = rec.status_value if rec else ""
     resp["next_name"] = nxt.name if nxt else None
+    resp["fields"] = await _edit_fields(item.row_index)
     return JSONResponse(resp)
+
+
+async def _edit_fields(row_index: int) -> dict:
+    if state.edit_workspace_id:
+        return await run_in_threadpool(workspace_mgr.get_edit_fields, state.edit_workspace_id, row_index)
+    if state.edit_data_manager:
+        return await run_in_threadpool(state.edit_data_manager.get_edit_fields, row_index)
+    raise HTTPException(status_code=400, detail="İşlem oturumu hazır değil.")
+
+
+@app.get("/api/edit/field-options")
+async def edit_field_options():
+    if state.edit_workspace_id:
+        return await run_in_threadpool(workspace_mgr.get_edit_options, state.edit_workspace_id)
+    if state.edit_data_manager:
+        return await run_in_threadpool(state.edit_data_manager.get_edit_options)
+    raise HTTPException(status_code=400, detail="İşlem oturumu hazır değil.")
 
 
 @app.post("/api/edit/action")
@@ -710,8 +732,10 @@ async def edit_action(request: EditActionRequest):
         raise HTTPException(status_code=422, detail="Geçersiz action.")
 
     try:
-        if state.active_workspace_id:
-            await run_in_threadpool(workspace_mgr.update_action, state.active_workspace_id, request.row_index, action)
+        validate_fields(request.fields)
+        if state.edit_workspace_id:
+            await run_in_threadpool(workspace_mgr.update_action, state.edit_workspace_id,
+                                    request.row_index, action, request.fields)
             status_name = "deleted" if action == "delete" else ("skipped" if action == "skip" else "kept")
             return JSONResponse({"status": status_name, "row_index": request.row_index})
 
@@ -725,8 +749,14 @@ async def edit_action(request: EditActionRequest):
             state.edit_data_manager.skip_row(request.row_index)
             return JSONResponse({"status": "skipped", "row_index": request.row_index})
         else:
-            state.edit_data_manager.keep_row(request.row_index)
+            state.edit_data_manager.keep_row(request.row_index, request.fields)
             return JSONResponse({"status": "kept", "row_index": request.row_index})
+    except HTTPException:
+        raise
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -734,8 +764,8 @@ async def edit_action(request: EditActionRequest):
 @app.post("/api/edit/action/undo")
 async def edit_undo_action(request: EditUndoRequest):
     try:
-        if state.active_workspace_id:
-            undone = await run_in_threadpool(workspace_mgr.undo_action, state.active_workspace_id, request.row_index)
+        if state.edit_workspace_id:
+            undone = await run_in_threadpool(workspace_mgr.undo_action, state.edit_workspace_id, request.row_index)
             return JSONResponse({"status": "ok", "undone_action": undone, "row_index": request.row_index})
 
         if not state.edit_data_manager:
@@ -760,8 +790,8 @@ async def get_edit_status():
 
     stats = state.edit_screenshot_worker.get_stats() if state.edit_screenshot_worker else {}
     pending = 0
-    if state.active_workspace_id:
-        ws_stats = workspace_mgr.get_workspace_stats(state.active_workspace_id)
+    if state.edit_workspace_id:
+        ws_stats = workspace_mgr.get_workspace_stats(state.edit_workspace_id)
         pending = ws_stats.get("pending", 0)
     elif state.edit_data_manager:
         pending = state.edit_data_manager.get_pending_count()
@@ -777,7 +807,7 @@ async def get_edit_status():
 @app.get("/api/edit/export")
 def edit_export_excel(source_file: Optional[str] = None, workspace_id: Optional[str] = None):
     """Veritabanındaki güncel hali (silinenler hariç) Excel olarak indirir."""
-    ws_id = workspace_id or (state.active_workspace_id if not source_file and not state.edit_data_manager else None)
+    ws_id = workspace_id or (state.edit_workspace_id if not source_file and not state.edit_data_manager else None)
     fd, tmp = tempfile.mkstemp(suffix=".xlsx")
     os.close(fd)
 

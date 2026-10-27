@@ -4,14 +4,14 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="description" content="Google Maps kayıtlarını düzenle: KONTROL kolonlu satırları incele, Sil, Atla veya Tut." />
-  <title>Mapin Etiket Sistemi — KONTROL Kolonu</title>
+  <title>Mapin Etiket Sistemi — İşlem Sayfası</title>
   <link rel="stylesheet" href="/static/style.css?v=20261023-ws" />
   <style>
     /* ── Düzenleme Sayfası Özel Stilleri ─────────────────────────── */
 
     /* Info paneli kaydırmaz; tüm içerik görünür */
     #info-panel {
-      overflow-y: hidden !important;
+      overflow-y: auto !important;
       display: flex;
       flex-direction: column;
     }
@@ -210,6 +210,24 @@
       width: 100% !important;
       box-sizing: border-box !important;
     }
+
+    .edit-fields { display: grid; gap: 10px; flex-shrink: 0; }
+    .edit-field { display: grid; gap: 5px; }
+    .edit-field .info-card-label { margin-bottom: 0; }
+    .edit-field-row { display: flex; gap: 6px; }
+    .edit-field-row input { min-width: 0; flex: 1; }
+    .edit-field-help { font-size: 11px; color: var(--text-secondary); }
+    .poi-state { display: block; padding: 9px 12px; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); font-size: 13px; }
+    .poi-state[data-state="open"] { color: var(--success); }
+    .poi-state[data-state="closed"] { color: var(--error); }
+    .history-section { flex: 0 0 auto; min-height: 80px; }
+    @media (max-width: 800px) {
+      #header { flex-wrap: wrap; padding: 10px 14px; gap: 10px; }
+      #main-content { flex-direction: column; overflow-y: auto; }
+      #screenshot-panel { flex: 0 0 50vh; min-height: 280px; }
+      #info-panel { width: 100% !important; flex: 0 0 auto; overflow-y: visible !important; }
+      .edit-action-bar { gap: 8px !important; }
+    }
   </style>
 </head>
 <body>
@@ -335,6 +353,32 @@
       </div>
 
       <!-- İstatistikler: 5 kolon, tek satır -->
+      <div class="info-card edit-fields" aria-label="İşletme sınıflandırması">
+        <label class="edit-field" for="edit-brand">
+          <span class="info-card-label">Marka</span>
+          <span class="edit-field-row">
+            <input class="form-input" id="edit-brand" list="brand-options" placeholder="Marka seçin veya yazın" autocomplete="off" disabled />
+            <button class="btn btn-secondary" id="brand-select-btn" type="button" disabled>Seç</button>
+          </span>
+        </label>
+        <datalist id="brand-options"></datalist>
+        <label class="edit-field" for="edit-main-category">
+          <span class="info-card-label">Ana Kategori</span>
+          <input class="form-input" id="edit-main-category" list="main-category-options" placeholder="Ana kategori seçin veya yazın" autocomplete="off" disabled />
+        </label>
+        <datalist id="main-category-options"></datalist>
+        <label class="edit-field" for="edit-sub-category">
+          <span class="info-card-label">Alt Kategori</span>
+          <input class="form-input" id="edit-sub-category" list="sub-category-options" placeholder="Alt kategori seçin veya yazın" autocomplete="off" disabled />
+        </label>
+        <datalist id="sub-category-options"></datalist>
+        <div class="edit-field">
+          <span class="info-card-label" id="poi-state-label">Pol State · İşletme Durumu</span>
+          <output class="poi-state" id="edit-poi-state" aria-labelledby="poi-state-label">Bilgi yok</output>
+        </div>
+        <p class="edit-field-help">Seçimler Tut ile kaydedilir. Atla, değişiklikleri kaydetmeden ilerler.</p>
+      </div>
+
       <div class="edit-stats-row" style="flex-shrink:0;">
         <div class="edit-stat-item">
           <div class="edit-stat-value" id="stat-current">&mdash;</div>
@@ -409,6 +453,6 @@
 
 <div id="toast-container"></div>
 <script src="/static/workspace_client.js?v=20261023-1"></script>
-<script src="/static/edit_app.js?v=20261013-v2"></script>
+<script src="/static/edit_app.js?v=20261027-fields"></script>
 </body>
 </html>

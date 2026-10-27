@@ -26,6 +26,7 @@ from typing import Any, Optional
 from config import DATA_DIR, edit_db_path, find_edit_input_file
 from data_model import ColumnRole, PlaceRecord, SheetSchema
 from excel_schema import detect_columns, get_schema, iter_data_rows
+from edit_fields import read_fields, read_options, write_fields
 
 logger = logging.getLogger(__name__)
 
@@ -297,9 +298,24 @@ class EditDataManager:
         self._drop_pending(row_index)
         logger.info(f"[EditDataManager] Satır silindi — row_index={row_index}")
 
-    def keep_row(self, row_index: int) -> None:
+    def get_edit_fields(self, row_index: int) -> dict:
+        with self._lock:
+            return read_fields(self._conn, TABLE, "id", self._columns, row_index)
+
+    def get_edit_options(self) -> dict:
+        with self._lock:
+            return read_options(self._conn, TABLE, self._columns)
+
+    def keep_row(self, row_index: int, fields: Optional[dict] = None) -> None:
         """Satırı veritabanında 'tutuldu' olarak işaretler."""
-        self._set_status(row_index, STATUS_KEPT)
+        with self._lock, self._conn:
+            added = write_fields(self._conn, TABLE, "id", self._columns, row_index, fields or {})
+            columns = self._columns + added
+            if added:
+                self._conn.execute("INSERT OR REPLACE INTO meta VALUES (?,?)",
+                                   ("columns", json.dumps(columns, ensure_ascii=False)))
+            self._conn.execute(f"UPDATE {TABLE} SET {STATUS_COL}=? WHERE id=?", (STATUS_KEPT, row_index))
+        self._columns = columns
         self._action_history[row_index] = "keep"
         self._drop_pending(row_index)
         logger.info(f"[EditDataManager] Satır tutuldu — row_index={row_index}")
