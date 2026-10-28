@@ -81,3 +81,102 @@ def test_workspace_adds_missing_fields(input_dir):
     workspace_mgr.update_action(ws["id"], 0, "keep", {"brand": "Yeni", "sub_category": "Alt"})
     assert workspace_mgr.get_edit_fields(ws["id"], 0)["brand"] == "Yeni"
     assert {"Marka", "Alt Kategori"} <= set(workspace_mgr.get_workspace(ws["id"])["columns"])
+
+
+def test_workspace_decisions_survive_new_manager_without_rewriting_source(input_dir):
+    from workspace_manager import WorkspaceManager, workspace_mgr
+    path = write_xlsx(input_dir / "persistent_workspace.xlsx", {"Veriler": [
+        ("name", "maps", "Marka", "Ana Kategori", "Alt Kategori"),
+        ("A", maps_url(1), "Eski", "Ev", "Mobilya"),
+        ("B", maps_url(2), "Eski", "Ev", "Mobilya"),
+        ("C", maps_url(3), "Eski", "Ev", "Mobilya"),
+    ]})
+    before = path.read_bytes()
+    ws = workspace_mgr.create_workspace(path, "Kalıcı kayıt")
+    workspace_mgr.update_action(ws["id"], 0, "keep", {"brand": "Yeni Marka", "main_category": "Alışveriş", "sub_category": "Dekorasyon"})
+    workspace_mgr.update_action(ws["id"], 1, "delete")
+    workspace_mgr.update_action(ws["id"], 2, "skip", {"brand": "Kaydedilmemeli"})
+    reopened = WorkspaceManager(workspace_mgr.db_path)
+    assert reopened.get_edit_fields(ws["id"], 0)["brand"] == "Yeni Marka"
+    assert reopened.get_edit_fields(ws["id"], 0)["sub_category"] == "Dekorasyon"
+    assert reopened.get_edit_fields(ws["id"], 2)["brand"] == "Eski"
+    assert reopened.get_workspace_stats(ws["id"])["kept"] == 1
+    assert reopened.get_workspace_stats(ws["id"])["deleted"] == 1
+    assert [r.row_index for r in reopened.get_place_records(ws["id"], status_filter="bekliyor")] == [2]
+    assert path.read_bytes() == before  # İşlemler SQLite'a kaydedildi; kaynak Excel değişmedi.
+
+
+@pytest.mark.parametrize('with_column', [False, True])
+@pytest.mark.parametrize('state', ['OPERATIONAL', 'CLOSED_PERMANENTLY', 'CLOSED_TEMPORARILY'])
+def test_poi_state_is_saved_and_exported_in_both_storage_flows(input_dir, tmp_path, with_column, state):
+    from workspace_manager import WorkspaceManager, workspace_mgr
+    p = source(input_dir, f'cleanpoi_cevre_state_{with_column}_{state}.xlsx', with_column)
+    if with_column:
+        wb = openpyxl.load_workbook(p)
+        wb.active.cell(2, wb.active.max_column).value = None
+        wb.save(p)
+        wb.close()
+    manager = EditDataManager(p.name)
+    manager.keep_row(0, {'poi_state': state})
+    manager.close()
+    manager = EditDataManager(p.name)
+    assert manager.get_edit_fields(0)['poi_state'] == state
+    manager.close()
+    out = tmp_path / 'legacy.xlsx'
+    export_excel(out, p.name)
+    sheet = openpyxl.load_workbook(out).active
+    columns = [c.value for c in sheet[1]]
+    column = field_columns(columns)['poi_state']
+    assert sheet.cell(2, columns.index(column) + 1).value == state
+
+    ws = workspace_mgr.create_workspace(p, 'Durum seçimi')
+    old = workspace_mgr.get_edit_fields(ws['id'], 0)['poi_state']
+    workspace_mgr.update_action(ws['id'], 0, 'skip', {'poi_state': state})
+    assert workspace_mgr.get_edit_fields(ws['id'], 0)['poi_state'] == old
+    workspace_mgr.update_action(ws['id'], 0, 'keep', {'poi_state': state})
+    reopened = WorkspaceManager(workspace_mgr.db_path)
+    assert reopened.get_edit_fields(ws['id'], 0)['poi_state'] == state
+    out = tmp_path / 'workspace.xlsx'
+    reopened.export_to_excel(ws['id'], out)
+    sheet = openpyxl.load_workbook(out).active
+    columns = [c.value for c in sheet[1]]
+    column = field_columns(columns)['poi_state']
+    assert sheet.cell(2, columns.index(column) + 1).value == state
+
+
+def test_invalid_poi_state_cannot_partially_save_other_fields(input_dir, monkeypatch):
+    import main
+    from workspace_manager import workspace_mgr
+    p = source(input_dir, 'invalid_poi_state.xlsx')
+    ws = workspace_mgr.create_workspace(p, 'Durum doğrulama')
+    monkeypatch.setattr(main.state, 'edit_workspace_id', ws['id'])
+    with TestClient(main.app) as client:
+        result = client.post('/api/edit/action', json={
+            'row_index': 0, 'action': 'keep', 'fields': {'brand': 'Kaydedilmemeli', 'poi_state': 'INVALID_STATUS'}})
+        assert result.status_code == 422
+        assert workspace_mgr.get_edit_fields(ws['id'], 0)['brand'] == 'Eski Marka'
+
+
+def test_existing_poi_state_is_protected_in_both_storage_flows(input_dir, monkeypatch):
+    import main
+    from workspace_manager import workspace_mgr
+    p = source(input_dir, 'cleanpoi_cevre_known_state.xlsx')
+    manager = EditDataManager(p.name)
+    for value in ['OPERATIONAL', 'CLOSED_PERMANENTLY', '']:
+        with pytest.raises(ValueError, match='Mevcut Pol State'):
+            manager.keep_row(0, {'brand': 'Kaydedilmemeli', 'poi_state': value})
+        assert manager.get_edit_fields(0)['poi_state'] == 'CLOSED_TEMPORARILY'
+        assert manager.get_edit_fields(0)['brand'] == 'Eski Marka'
+    manager.close()
+    ws = workspace_mgr.create_workspace(p, 'Mevcut durum korunur')
+    monkeypatch.setattr(main.state, 'edit_workspace_id', ws['id'])
+    with TestClient(main.app) as client:
+        result = client.post('/api/edit/action', json={
+            'row_index': 0, 'action': 'keep', 'fields': {'brand': 'Kaydedilmemeli', 'poi_state': 'OPERATIONAL'}})
+        assert result.status_code == 422
+        assert workspace_mgr.get_edit_fields(ws['id'], 0)['poi_state'] == 'CLOSED_TEMPORARILY'
+        assert workspace_mgr.get_edit_fields(ws['id'], 0)['brand'] == 'Eski Marka'
+        result = client.post('/api/edit/action', json={
+            'row_index': 0, 'action': 'keep', 'fields': {'brand': 'Yeni Marka'}})
+        assert result.status_code == 200
+        assert workspace_mgr.get_edit_fields(ws['id'], 0)['poi_state'] == 'CLOSED_TEMPORARILY'

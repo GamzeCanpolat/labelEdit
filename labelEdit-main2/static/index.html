@@ -5,29 +5,24 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="description" content="Google Maps Etiketleme ve Kontrol Portalı — Excel dosya yükleme ve SQLite üzerinden Excel dosya seçimi." />
   <title>Ana Sayfa — Excel Yükleme ve Seçimi</title>
+  <script src="/static/theme.js?v=20261028"></script>
   <link rel="stylesheet" href="/static/style.css?v=20261027-focus" />
+  <link rel="stylesheet" href="/static/theme.css?v=20261028" />
 </head>
-<body>
+<body class="home-page">
 
 <div id="app">
 
   <!-- ═══ HEADER ═══════════════════════════════════════════════════════════ -->
   <header id="header">
     <div class="header-brand" style="gap:10px;">
-      <div style="display:flex;align-items:baseline;gap:1px;">
-        <span style="font-size:18px;font-weight:800;color:#fff;letter-spacing:-0.5px;font-family:'Inter',sans-serif;">mapin</span>
-        <span style="font-size:12px;font-weight:500;color:rgba(255,255,255,0.55);letter-spacing:0.5px;font-family:'Inter',sans-serif;margin-left:4px;">data</span>
-      </div>
-      <div style="border-left:1px solid rgba(255,255,255,0.15);padding-left:10px;">
-        <div class="brand-sub">Google Maps Etiketleme ve Kontrol</div>
-      </div>
+      <a href="/" class="brand-logo" aria-label="Mapin ana sayfa"><img src="/static/mapin-logo.png" alt="Mapin" width="94" height="27" /></a>
+      <span class="brand-caption">Google Maps Etiketleme ve Kontrol</span>
     </div>
 
     <!-- Navigasyon -->
     <div class="header-actions">
-      <a href="/islem" class="btn-hero-action btn-hero-action--green" style="padding: 8px 18px; font-size: 13px; text-decoration: none;" title="İşlem Sayfasına Geç">
-        ⚡ İşlem Sayfası (Tut / Sil / Atla) &rarr;
-      </a>
+      <div class="theme-switch" role="group" aria-label="Görünüm"><button type="button" data-theme-choice="light" aria-pressed="false">Açık</button><button type="button" data-theme-choice="dark" aria-pressed="true">Koyu</button></div>
     </div>
   </header>
 

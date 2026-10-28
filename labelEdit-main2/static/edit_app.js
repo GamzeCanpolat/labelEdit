@@ -182,9 +182,11 @@ class EditUIController {
       brand: document.getElementById('edit-brand'),
       main_category: document.getElementById('edit-main-category'),
       sub_category: document.getElementById('edit-sub-category'),
+      poi_state: document.getElementById('edit-poi-state'),
     };
     this.brandSelectBtn = document.getElementById('brand-select-btn');
     this.poiState = document.getElementById('edit-poi-state');
+    this.poiStateDisplay = document.getElementById('poi-state-display');
     this.mappingBtn = document.getElementById('column-mapping-btn');
     this.mappingDialog = document.getElementById('mapping-dialog');
     this.retryMapBtn = document.getElementById('retry-map-btn');
@@ -237,28 +239,63 @@ class EditUIController {
   }
 
   getFieldValues() {
-    return Object.fromEntries(Object.entries(this.editFields).map(([key, input]) => [key, input.value.trim()]));
+    const fields = Object.fromEntries(Object.entries(this.editFields)
+      .filter(([key]) => key !== 'poi_state').map(([key, input]) => [key, input.value.trim()]));
+    // Kaynaktaki farklı durum kodları kullanıcı seçmedikçe dönüştürülmez.
+    if (this._poiStateMissing && this.poiState.value !== this._originalPoiSelection) fields.poi_state = this.poiState.value;
+    return fields;
+  }
+
+  setSaveState(message, saved = false) {
+    const status = document.getElementById('save-state');
+    status.textContent = message;
+    status.dataset.saved = String(saved);
   }
 
   updateFields(fields = {}) {
-    for (const [key, input] of Object.entries(this.editFields)) input.value = fields[key] || '';
+    for (const [key, input] of Object.entries(this.editFields)) {
+      if (key !== 'poi_state') input.value = fields[key] || '';
+    }
     const raw = String(fields.poi_state || '').trim();
     const state = raw.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
       .replace(/ı/g, 'i').replace(/[_-]+/g, ' ').replace(/\s+/g, ' ');
-    let label = raw || 'Bilgi yok';
-    let kind = '';
+    this._poiStateMissing = ['', 'unknown', 'bilgi yok', 'bilinmiyor', 'null', 'none', 'nan', 'n a', 'na']
+      .includes(state.replace(/[^a-z0-9]+/g, ' ').trim());
+    let selected = '';
     if (['open', 'operational', 'acik', 'active'].includes(state)) {
-      label = 'Açık'; kind = 'open';
+      selected = 'OPERATIONAL';
     } else if (['closed temporarily', 'temporarily closed', 'gecici olarak kapali'].includes(state)) {
-      label = 'Geçici olarak kapalı'; kind = 'closed';
+      selected = 'CLOSED_TEMPORARILY';
     } else if (['closed permanently', 'permanently closed', 'kalici olarak kapali'].includes(state)) {
-      label = 'Kalıcı olarak kapalı'; kind = 'closed';
+      selected = 'CLOSED_PERMANENTLY';
     } else if (['closed', 'kapali', 'inactive'].includes(state)) {
-      label = 'Kapalı'; kind = 'closed';
+      selected = 'CLOSED_PERMANENTLY';
     }
-    this.poiState.textContent = label;
-    this.poiState.dataset.state = kind;
+    this.poiState.querySelectorAll('[data-source]').forEach(option => option.remove());
+    if (raw && !selected && !this._poiStateMissing) {
+      const original = new Option(`Mevcut: ${raw}`, raw);
+      original.dataset.source = 'true';
+      this.poiState.append(original);
+      selected = raw;
+    }
+    this.poiState.value = selected;
+    this._originalPoiSelection = selected;
+    this.poiState.hidden = !this._poiStateMissing;
+    this.poiState.disabled = this._actionsLoading || !this._poiStateMissing;
+    this.poiStateDisplay.hidden = this._poiStateMissing;
+    this.poiStateDisplay.textContent = {
+      OPERATIONAL: 'Açık', CLOSED_PERMANENTLY: 'Kapalı', CLOSED_TEMPORARILY: 'Geçici olarak kapalı',
+    }[selected] || raw;
+    this.poiStateDisplay.title = raw;
+    this.updatePoiStateStyle();
     this.poiState.title = raw;
+  }
+
+  updatePoiStateStyle() {
+    const value = this.poiState.value;
+    this.poiState.dataset.state = value === 'OPERATIONAL' ? 'open'
+      : ['CLOSED_PERMANENTLY', 'CLOSED_TEMPORARILY'].includes(value) ? 'closed' : '';
+    this.poiStateDisplay.dataset.state = this.poiState.dataset.state;
   }
 
   /* -- Oturum Başlangıcı */
@@ -381,6 +418,7 @@ class EditUIController {
   setActionsLoading(loading) {
     this._actionsLoading = loading;
     for (const input of Object.values(this.editFields)) input.disabled = loading;
+    this.poiState.disabled = loading || !this._poiStateMissing;
     this.brandSelectBtn.disabled = loading;
     this.deleteBtn.disabled = loading;
     this.skipBtn.disabled   = loading;
@@ -518,6 +556,8 @@ class EditApp {
     this._isActing        = false;
     this._statusTimer = null;
     this._prefetched = new Map();
+    this._lastSaveMessage = '';
+    this._lastSaveConfirmed = false;
   }
 
   init() {
@@ -546,6 +586,16 @@ class EditApp {
   }
 
   _bindEvents() {
+    this._ui.poiState.addEventListener('change', () => this._ui.updatePoiStateStyle());
+    for (const input of Object.values(this._ui.editFields)) {
+      input.addEventListener('input', () => {
+        const item = this._state.get('currentItem');
+        const changed = item && Object.entries(this._ui.getFieldValues())
+          .some(([key, value]) => value !== (item.fields?.[key] || ''));
+        this._ui.setSaveState(changed ? 'Kaydedilmemiş değişiklikler' : this._lastSaveMessage,
+          !changed && this._lastSaveConfirmed);
+      });
+    }
     this._ui.mappingBtn.addEventListener('click', () => this._ui.openMapping(this._state.get('isStarted')));
     document.getElementById('mapping-close-btn').addEventListener('click', () => this._ui.mappingDialog.close());
     document.getElementById('mapping-save-btn').addEventListener('click', () => this._saveMapping());
@@ -597,7 +647,12 @@ class EditApp {
           const draft = Object.fromEntries(Object.entries(this._ui.getFieldValues())
             .filter(([key, value]) => value !== (item.fields?.[key] || '')));
           item.fields = await this._api.getFields(item.row_index);
-          this._ui.updateFields({ ...item.fields, ...draft });
+          this._ui.updateFields(item.fields);
+          for (const [key, value] of Object.entries(draft)) {
+            if (key !== 'poi_state' || this._ui._poiStateMissing) this._ui.editFields[key].value = value;
+          }
+          this._ui.updatePoiStateStyle();
+          if (Object.keys(draft).length) this._ui.setSaveState('Kaydedilmemiş değişiklikler');
         }
       }
       this._ui.mappingDialog.close();
@@ -728,6 +783,7 @@ class EditApp {
     document.getElementById('image-source').textContent = item.from_cache ? 'Önbellekten yüklendi' : 'Harita görüntüsü';
     await this._ui.displayScreenshot(item.file_url, !!item.error, item.error, this._prefetched.get(item.file_url));
     this._ui.setActionsLoading(false);
+    this._ui.setSaveState(this._lastSaveMessage, this._lastSaveConfirmed);
     this._ui.setBackEnabled(this._state.get('backStack').length > 0);
   }
 
@@ -742,6 +798,8 @@ class EditApp {
     this._ui.setActionsLoading(true);
     try {
       await this._api.sendAction(rowIndex, 'delete');
+      this._lastSaveMessage = 'Son silme işlemi veritabanına kaydedildi.';
+      this._lastSaveConfirmed = true;
       const name = this._state.get('currentName');
       this._ui.addHistory(name, 'delete');
       this._state.set('deletedCount', this._state.get('deletedCount') + 1);
@@ -772,6 +830,8 @@ class EditApp {
     this._ui.setActionsLoading(true);
     try {
       await this._api.sendAction(rowIndex, 'skip');
+      this._lastSaveMessage = 'Kayıt atlandı; alan değişiklikleri kaydedilmedi.';
+      this._lastSaveConfirmed = false;
       const name = this._state.get('currentName');
       this._ui.addHistory(name, 'skip');
       this._state.set('skippedCount', this._state.get('skippedCount') + 1);
@@ -804,11 +864,15 @@ class EditApp {
     this._ui.setActionsLoading(true);
     try {
       const fields = this._ui.getFieldValues();
+      this._ui.setSaveState('Veritabanına kaydediliyor…');
       await this._api.sendAction(rowIndex, 'keep', fields);
+      this._lastSaveMessage = 'Son işlem veritabanına kaydedildi.';
+      this._lastSaveConfirmed = true;
       this._refreshSchema(this._state.get('workspace')?.id);
       current.fields = { ...current.fields, ...fields };
       for (const [key, value] of Object.entries(fields)) {
         const list = this._ui.editFields[key].list;
+        if (!list) continue;
         if (value && ![...list.options].some(option => option.value === value)) list.append(new Option(value, value));
       }
       const name = this._state.get('currentName');
@@ -825,6 +889,7 @@ class EditApp {
     } catch (err) {
       this._toast.error(`Tutma hatası: ${err.message}`);
       this._ui.setActionsLoading(false);
+      this._ui.setSaveState('Kayıt başarısız; değişiklikler kaydedilmedi.');
     } finally {
       this._isActing = false;
     }
@@ -846,6 +911,8 @@ class EditApp {
       this._ui.setActionsLoading(true);
       // Backend'deki işlemi geri al
       await this._api.undoAction(item.row_index);
+      this._lastSaveMessage = 'Son işlem geri alındı.';
+      this._lastSaveConfirmed = true;
       backStack.pop();
       const current = this._state.get('currentItem');
       if (current) this._state.get('forwardStack').push(current);

@@ -50,11 +50,14 @@
 .edit-page .form-input { padding: 11px 12px; font-size: 13px; }
 .edit-page .form-input:disabled { opacity: .5; }
 .brand-picker { color: var(--text-primary); background: var(--bg-elevated); }
-.business-state { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding-top: 2px; }
-.business-state small { display: block; font-size: 10px; color: var(--text-muted); margin-top: 3px; font-weight: 400; }
-#edit-poi-state { font-size: 12px; border: 1px solid var(--border-subtle); border-radius: var(--radius-full); padding: 6px 10px; color: var(--text-secondary); text-align: center; }
+.business-state { display: grid; gap: 8px; padding-top: 2px; }
+.business-state small { display: inline; font-size: 10px; color: var(--text-muted); margin-left: 6px; font-weight: 400; }
+#edit-poi-state { width: 100%; font-size: 13px; border: 1px solid var(--border-medium); border-radius: var(--radius-sm); padding: 11px 12px; background: var(--bg-base); color: var(--text-secondary); }
 #edit-poi-state[data-state="open"] { color: var(--success); }
 #edit-poi-state[data-state="closed"] { color: var(--error); }
+#poi-state-display { justify-self: start; padding: 7px 12px; border: 1px solid var(--border-subtle); border-radius: var(--radius-full); font-size: 12px; color: var(--text-secondary); }
+#poi-state-display[data-state="open"] { color: var(--success); }
+#poi-state-display[data-state="closed"] { color: var(--error); }
 .field-help { font-size: 11px; line-height: 1.7; color: var(--text-muted); }
 .field-help strong { font-weight: 500; color: var(--text-secondary); }
 .save-state { font-size: 11px; color: var(--text-secondary); }

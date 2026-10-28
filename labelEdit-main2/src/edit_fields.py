@@ -8,7 +8,12 @@ FIELD_NAMES = {
     "sub_category": ("Alt Kategori", "sub category", "subcategory", "category sub", "kategori 2", "category 2"),
     "poi_state": ("POI State", "Pol State", "poi status", "isletme durumu", "business status", "acik kapali", "acik kapali kontrol"),
 }
-EDITABLE_FIELDS = {"brand", "main_category", "sub_category"}
+EDITABLE_FIELDS = {"brand", "main_category", "sub_category", "poi_state"}
+POI_STATES = {"", "OPERATIONAL", "CLOSED_PERMANENTLY", "CLOSED_TEMPORARILY"}
+
+
+def missing_poi_state(value):
+    return normalize_header(value) in {"", "unknown", "bilgi yok", "bilinmiyor", "null", "none", "nan", "n a", "na"}
 
 
 def quote(name):
@@ -40,7 +45,7 @@ def read_fields(conn, table, index_column, columns, row_index, overrides=None):
 def read_options(conn, table, columns, overrides=None):
     result = {}
     for key, col in field_columns(columns, overrides).items():
-        if key in EDITABLE_FIELDS:
+        if key in EDITABLE_FIELDS and key != "poi_state":
             result[key] = [str(row[0]) for row in conn.execute(
                 f"SELECT DISTINCT {quote(col)} FROM {quote(table)} "
                 f"WHERE TRIM(COALESCE({quote(col)}, ''))<>'' ORDER BY {quote(col)}"
@@ -51,12 +56,19 @@ def read_options(conn, table, columns, overrides=None):
 def validate_fields(fields):
     if set(fields) - EDITABLE_FIELDS:
         raise ValueError("Geçersiz işlem sayfası alanı.")
+    if "poi_state" in fields and fields["poi_state"].strip() not in POI_STATES:
+        raise ValueError("İşletme durumu Açık, Kapalı veya Geçici olarak kapalı olmalıdır.")
 
 
 def write_fields(conn, table, index_column, columns, row_index, fields, overrides=None):
     """Çağıranın transaction'ı içinde kaydeder; eklenen sütunları döndürür."""
     validate_fields(fields)
-    read_fields(conn, table, index_column, columns, row_index)
+    if not conn.in_transaction:
+        conn.execute("BEGIN IMMEDIATE")
+    current = read_fields(conn, table, index_column, columns, row_index, overrides)
+    if ("poi_state" in fields and not missing_poi_state(current["poi_state"])
+            and fields["poi_state"].strip() != current["poi_state"]):
+        raise ValueError("Mevcut Pol State bilgisi değiştirilemez; yalnızca bilgisi olmayan kayıtlar doldurulabilir.")
     mapping = field_columns(columns, overrides)
     added = []
     for key, value in fields.items():

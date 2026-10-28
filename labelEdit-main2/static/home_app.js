@@ -149,8 +149,8 @@ const HomeApp = {
             <span>İlerleme: <strong>%${pct}</strong> (${completed} / ${stats.total})</span>
             <span style="color: var(--warning); font-weight: 600;">Kalan: ${stats.pending}</span>
           </div>
-          <div style="height: 6px; background: rgba(255,255,255,0.08); border-radius: 999px; overflow: hidden;">
-            <div style="height: 100%; width: ${pct}%; background: linear-gradient(90deg, #6366f1, #2ed573); border-radius: 999px;"></div>
+          <div style="height: 6px; background: var(--border-subtle); border-radius: 999px; overflow: hidden;">
+            <div style="height: 100%; width: ${pct}%; background: var(--accent-grad); border-radius: 999px;"></div>
           </div>
         </div>
 

@@ -3,14 +3,16 @@
 <head>
 <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Mapin — İşlem Sayfası</title>
+<script src="/static/theme.js?v=20261028"></script>
 <link rel="stylesheet" href="/static/style.css?v=20261023-ws" /><link rel="stylesheet" href="/static/edit.css?v=20261028" />
+<link rel="stylesheet" href="/static/theme.css?v=20261028" />
 </head>
 <body class="edit-page">
 <div id="app">
 <header id="header">
-  <div class="edit-brand"><span class="edit-logo">mapin <small>data</small></span><span class="edit-page-name">İşlem sayfası</span></div>
+  <div class="edit-brand"><a href="/" class="brand-logo" aria-label="Mapin ana sayfa"><img src="/static/mapin-logo.png" alt="Mapin" width="94" height="27" /></a><span class="edit-page-name">İşlem sayfası</span></div>
   <div class="workspace-pill" id="workspace-pill"><span aria-hidden="true">📁</span><span class="ws-pill-name" id="header-ws-name">Excel seçin</span><span class="ws-pill-badge" id="header-ws-badge">—</span><button class="ws-pill-btn" id="open-ws-modal-btn" onclick="WorkspaceClient.openWorkspaceModal()">Değiştir</button></div>
-  <nav class="header-actions" aria-label="Dosya işlemleri"><button class="edit-quiet-btn" id="column-mapping-btn" disabled>Sütunları eşleştir</button><a href="/api/edit/export" id="export-btn" class="edit-export">Excel indir ↓</a><a href="/" class="edit-quiet-btn">Ana sayfa</a></nav>
+  <nav class="header-actions" aria-label="Dosya işlemleri"><div class="theme-switch" role="group" aria-label="Görünüm"><button type="button" data-theme-choice="light" aria-pressed="false">Açık</button><button type="button" data-theme-choice="dark" aria-pressed="true">Koyu</button></div><button class="edit-quiet-btn" id="column-mapping-btn" disabled>Sütunları eşleştir</button><a href="/api/edit/export" id="export-btn" class="edit-export">Excel indir ↓</a><a href="/" class="edit-quiet-btn">Ana sayfa</a></nav>
 </header>
 <main id="main-content">
   <section id="screenshot-panel" aria-label="Google Maps görüntüsü">
@@ -38,7 +40,7 @@
       <div class="edit-field"><label for="edit-brand">Marka</label><div class="edit-field-row"><input class="form-input" id="edit-brand" list="brand-options" placeholder="Seç veya yeni marka yaz" autocomplete="off" disabled /><button class="edit-quiet-btn brand-picker" id="brand-select-btn" type="button" disabled aria-label="Marka seçeneklerini aç">Seç ▾</button></div><datalist id="brand-options"></datalist></div>
       <div class="edit-field"><label for="edit-main-category">Ana kategori</label><input class="form-input" id="edit-main-category" list="main-category-options" placeholder="Seç veya yaz" autocomplete="off" disabled /><datalist id="main-category-options"></datalist></div>
       <div class="edit-field"><label for="edit-sub-category">Alt kategori</label><input class="form-input" id="edit-sub-category" list="sub-category-options" placeholder="Seç veya yaz" autocomplete="off" disabled /><datalist id="sub-category-options"></datalist></div>
-      <div class="edit-field business-state"><span id="poi-state-label">İşletme durumu <small>Pol State</small></span><output id="edit-poi-state" aria-labelledby="poi-state-label">Bilgi yok</output></div>
+      <div class="edit-field business-state"><label id="poi-state-label" for="edit-poi-state">İşletme durumu <small>Pol State</small></label><output id="poi-state-display" aria-labelledby="poi-state-label" hidden></output><select class="form-select" id="edit-poi-state" disabled><option value="">Bilgi yok — seçin</option><option value="OPERATIONAL">Açık</option><option value="CLOSED_PERMANENTLY">Kapalı</option><option value="CLOSED_TEMPORARILY">Geçici olarak kapalı</option></select></div>
       <p class="field-help">Yazdıkların <strong>Tut</strong> ile kaydedilir.<br /><strong>Atla</strong>, değişiklikleri kaydetmeden ilerler.</p><span id="save-state" class="save-state" role="status"></span>
     </div>
     <details class="edit-more" id="record-details"><summary>Diğer kayıt bilgileri</summary><div class="detail-content"><div id="kontrol-section"><span class="info-card-label">Kontrol notu</span><p id="kontrol-value-text">—</p></div><button id="url-preview" class="url-preview" title="Bağlantıyı kopyala">—</button><div id="field-mapping-summary" class="mapping-summary"></div></div></details>
@@ -54,6 +56,6 @@
 <dialog id="mapping-dialog" aria-labelledby="mapping-title"><div class="mapping-heading"><div><h2 id="mapping-title">Excel sütunlarını eşleştir</h2><p>Dosyandaki sütunları bir kez seç; bu dosya için hatırlansın.</p></div><button id="mapping-close-btn" class="edit-quiet-btn" aria-label="Kapat">✕</button></div><div id="mapping-fields"></div><p class="field-help" id="mapping-help">Eksik marka ve kategori sütunları, bir değer yazıp Tut dediğinde oluşturulur.</p><p id="mapping-error" role="alert"></p><div class="mapping-actions"><button id="mapping-save-btn" class="btn btn-primary">Eşleştirmeyi kaydet</button></div></dialog>
 <div id="completed-screen"><div class="completed-icon" aria-hidden="true">✓</div><h2 class="completed-title">Kayıtlar tamamlandı</h2><p class="completed-sub" id="completed-sub">Değişiklikler kaydedildi.</p><div class="completed-actions"><a href="/api/edit/export" id="completed-export-btn" class="btn btn-primary">Excel indir</a><button class="btn btn-secondary" onclick="location.reload()">Yeniden başla</button><a href="/" class="btn btn-secondary">Ana sayfa</a></div></div>
 <div id="toast-container"></div>
-<script src="/static/workspace_client.js?v=20261023-1"></script><script src="/static/edit_app.js?v=20261028-dynamic"></script>
+<script src="/static/workspace_client.js?v=20261023-1"></script><script src="/static/edit_app.js?v=20261028-missing-state"></script>
 </body>
 </html>

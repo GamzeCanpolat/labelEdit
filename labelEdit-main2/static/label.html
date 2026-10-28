@@ -5,7 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="description" content="Google Maps verileri için hızlı etiketleme ve kategorizasyon aracı. Otomatik screenshot alma, buffer sistemi ve klavye odaklı arayüz." />
   <title>Proje V1 — Google Maps Etiketleme Aracı</title>
+  <script src="/static/theme.js?v=20261028"></script>
   <link rel="stylesheet" href="/static/style.css?v=20261023-ws" />
+  <link rel="stylesheet" href="/static/theme.css?v=20261028" />
 </head>
 <body>
 
@@ -14,11 +16,8 @@
   <!-- ═══ HEADER ═══════════════════════════════════════════════════════════ -->
   <header id="header">
     <div class="header-brand">
-      <div class="brand-icon">📍</div>
-      <div>
-        <h1>Maps Etiketleyici</h1>
-        <div class="brand-sub">Google Maps Kategorizasyon Aracı</div>
-      </div>
+      <a href="/" class="brand-logo" aria-label="Mapin ana sayfa"><img src="/static/mapin-logo.png" alt="Mapin" width="94" height="27" /></a>
+      <span class="brand-caption">Google Maps Kategorizasyon Aracı</span>
     </div>
 
     <!-- Çalışma Ortamı (Workspace) Seçici -->
@@ -54,6 +53,7 @@
     </div>
 
     <div class="header-actions">
+      <div class="theme-switch" role="group" aria-label="Görünüm"><button type="button" data-theme-choice="light" aria-pressed="false">Açık</button><button type="button" data-theme-choice="dark" aria-pressed="true">Koyu</button></div>
       <button class="btn-icon btn-nav" id="export-excel-btn" title="Güncel SQLite tablosunu Excel (.xlsx) olarak indir" style="display:none; text-decoration: none; align-items: center; gap: 4px; font-size: 12px; font-weight: 600; padding: 6px 12px; background: rgba(46, 213, 115, 0.15); color: var(--success); border: 1px solid rgba(46, 213, 115, 0.3); border-radius: 8px;">📥 Excel İndir</button>
       <a href="/edit" class="btn-icon btn-nav" style="text-decoration: none; display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 600; padding: 6px 12px; background: rgba(99, 102, 241, 0.15); color: var(--accent); border: 1px solid rgba(99, 102, 241, 0.3); border-radius: 8px;" title="Düzenleme Akışına Geç">✏️ Düzenle</a>
       <button class="btn-icon btn-nav" id="back-btn" title="Önceki kayda dön (Alt + Sol Ok)" disabled>← Geri</button>
