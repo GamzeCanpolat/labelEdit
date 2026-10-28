@@ -434,10 +434,14 @@ def detect_header_row(rows: list[tuple]) -> int:
             continue
         header_like = sum(_is_header_like(c) for c in row)
         has_maps = any(looks_like_maps_url(c) for c in row)
-        score = header_like - (100 if has_maps else 0)
+        # Rapor künyesi ("Hazırlayan", "Tarih" vb.) asıl tablodan önce gelebilir.
+        known_headers = sum(max(url_header_score(normalize_header(c)),
+                                status_header_score(normalize_header(c)),
+                                name_header_score(normalize_header(c)),
+                                place_id_header_score(normalize_header(c))) >= .7 for c in cells)
+        score = header_like + 4 * known_headers - (100 if has_maps else 0)
         if header_like >= max(2, 0.5 * len(cells)) and score > best_score:
             best_i, best_score = i, score
-            break   # ilk uygun satır başlıktır
     if best_score < 0:
         first = next((r for r in rows if any(clean_cell(c) for c in r)), ())
         if any(looks_like_maps_url(c) for c in first):

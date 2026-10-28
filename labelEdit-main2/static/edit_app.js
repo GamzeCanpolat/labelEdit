@@ -31,6 +31,7 @@ class EditStateManager {
       nextName:        '',
       sourceCompleted: false,
       backStack:       [], // Geri gitme için önceki kayıtlar
+      forwardStack:    [],
     };
   }
   get(key)        { return this._state[key]; }
@@ -43,6 +44,21 @@ class EditStateManager {
    ──────────────────────────────────────────────────────────────────────────── */
 class EditApiClient {
   constructor(baseUrl = '') { this._base = baseUrl; }
+
+  async request(path, body) {
+    const res = await fetch(this._base + path, body === undefined ? {} : {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({}));
+      throw new Error(error.detail || `HTTP ${res.status}`);
+    }
+    return res.json();
+  }
+  getStatus() { return this.request('/api/edit/status'); }
+  getSchema(id) { return this.request('/api/edit/schema' + (id ? `?workspace_id=${encodeURIComponent(id)}` : '')); }
+  getFields(row) { return this.request(`/api/edit/fields/${row}`); }
+  saveMapping(id, mapping) { return this.request(`/api/workspaces/${encodeURIComponent(id)}/mapping`, { mapping }); }
 
   async startSession(startIndex, workspaceId = null) {
     const body = { start_index: startIndex };
@@ -68,11 +84,17 @@ class EditApiClient {
     return res.json();
   }
 
-  async sendAction(rowIndex, action) {
+  async getFieldOptions() {
+    const res = await fetch(`${this._base}/api/edit/field-options`);
+    if (!res.ok) throw new Error('Marka ve kategori seçenekleri alınamadı.');
+    return res.json();
+  }
+
+  async sendAction(rowIndex, action, fields = {}) {
     const res = await fetch(`${this._base}/api/edit/action`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ row_index: rowIndex, action }),
+      body: JSON.stringify({ row_index: rowIndex, action, fields }),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
@@ -134,7 +156,8 @@ class EditUIController {
     // Header
     this.progressFill       = document.getElementById('progress-bar-fill');
     this.progressText       = document.getElementById('progress-text');
-    this.bufferDots         = document.querySelectorAll('.buffer-dot');
+    this.bufferIndicator    = document.getElementById('buffer-indicator');
+    this.bufferText         = document.getElementById('buffer-text');
     this.backBtn            = document.getElementById('back-btn');
     this.openUrlBtn         = document.getElementById('open-url-btn');
 
@@ -155,6 +178,87 @@ class EditUIController {
     this.skipBtn            = document.getElementById('skip-btn');
     this.keepBtn            = document.getElementById('keep-btn');
     this.actionHint         = document.getElementById('action-hint');
+    this.editFields = {
+      brand: document.getElementById('edit-brand'),
+      main_category: document.getElementById('edit-main-category'),
+      sub_category: document.getElementById('edit-sub-category'),
+    };
+    this.brandSelectBtn = document.getElementById('brand-select-btn');
+    this.poiState = document.getElementById('edit-poi-state');
+    this.mappingBtn = document.getElementById('column-mapping-btn');
+    this.mappingDialog = document.getElementById('mapping-dialog');
+    this.retryMapBtn = document.getElementById('retry-map-btn');
+    this.retryNextBtn = document.getElementById('retry-next-btn');
+    this.schema = null;
+    this.fieldLabels = { maps_url: 'Maps bağlantısı', name: 'İşletme adı', brand: 'Marka', main_category: 'Ana kategori', sub_category: 'Alt kategori', poi_state: 'İşletme durumu' };
+  }
+
+  setSchema(schema) {
+    this.schema = schema;
+    this.mappingBtn.disabled = this._actionsLoading || !schema.workspace_id;
+    document.getElementById('field-mapping-summary').textContent = Object.entries(this.fieldLabels)
+      .map(([key, name]) => `${name}: ${schema.mapping[key] || 'Dosyada yok'}`).join('\n');
+  }
+
+  openMapping(isStarted) {
+    if (!this.schema) return;
+    const container = document.getElementById('mapping-fields');
+    container.replaceChildren();
+    for (const [key, name] of Object.entries(this.fieldLabels)) {
+      const label = document.createElement('label');
+      label.className = 'mapping-field';
+      const title = document.createElement('span'); title.textContent = name;
+      const select = document.createElement('select');
+      select.className = 'form-select'; select.dataset.role = key;
+      select.append(new Option(['maps_url', 'name'].includes(key) ? 'Sütun seçin' : 'Otomatik / yeni sütun', ''));
+      for (const column of this.schema.columns) select.append(new Option(column, column));
+      select.value = this.schema.mapping[key] || '';
+      select.disabled = isStarted && ['maps_url', 'name'].includes(key);
+      label.append(title, select); container.append(label);
+    }
+    document.getElementById('mapping-error').textContent = '';
+    document.getElementById('mapping-help').textContent = isStarted
+      ? 'Marka, kategori ve durum eşleştirmelerini değiştirebilirsin. Maps ve işletme adı oturum boyunca sabit kalır.'
+      : 'Eksik marka ve kategori sütunları, bir değer yazıp Tut dediğinde oluşturulur.';
+    this.mappingDialog.showModal();
+  }
+
+  getMapping() {
+    return Object.fromEntries([...this.mappingDialog.querySelectorAll('select')].filter(select => !select.disabled)
+      .map(select => [select.dataset.role, select.value]));
+  }
+
+  setFieldOptions(options) {
+    const lists = { brand: 'brand-options', main_category: 'main-category-options', sub_category: 'sub-category-options' };
+    for (const [key, id] of Object.entries(lists)) {
+      const list = document.getElementById(id);
+      list.replaceChildren(...(options[key] || []).map(value => new Option(value, value)));
+    }
+  }
+
+  getFieldValues() {
+    return Object.fromEntries(Object.entries(this.editFields).map(([key, input]) => [key, input.value.trim()]));
+  }
+
+  updateFields(fields = {}) {
+    for (const [key, input] of Object.entries(this.editFields)) input.value = fields[key] || '';
+    const raw = String(fields.poi_state || '').trim();
+    const state = raw.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .replace(/ı/g, 'i').replace(/[_-]+/g, ' ').replace(/\s+/g, ' ');
+    let label = raw || 'Bilgi yok';
+    let kind = '';
+    if (['open', 'operational', 'acik', 'active'].includes(state)) {
+      label = 'Açık'; kind = 'open';
+    } else if (['closed temporarily', 'temporarily closed', 'gecici olarak kapali'].includes(state)) {
+      label = 'Geçici olarak kapalı'; kind = 'closed';
+    } else if (['closed permanently', 'permanently closed', 'kalici olarak kapali'].includes(state)) {
+      label = 'Kalıcı olarak kapalı'; kind = 'closed';
+    } else if (['closed', 'kapali', 'inactive'].includes(state)) {
+      label = 'Kapalı'; kind = 'closed';
+    }
+    this.poiState.textContent = label;
+    this.poiState.dataset.state = kind;
+    this.poiState.title = raw;
   }
 
   /* -- Oturum Başlangıcı */
@@ -193,23 +297,34 @@ class EditUIController {
     this.loadingOverlay.classList.remove('hidden');
     this.loadingText.textContent = text;
     this.screenshotImg.classList.remove('loaded');
-    this.screenshotImg.src = '';
+    this.retryMapBtn.hidden = true;
+    this.retryNextBtn.hidden = true;
     this.errorBadge.style.display = 'none';
   }
   hideLoading() { this.loadingOverlay.classList.add('hidden'); }
 
-  displayScreenshot(fileUrl, hasError, errorMsg = '') {
+  async displayScreenshot(fileUrl, hasError, errorMsg = '', prefetchedImage = null) {
     if (fileUrl && !hasError) {
-      this.screenshotImg.onload = () => {
-        this.screenshotImg.classList.add('loaded');
-        this.hideLoading();
-      };
-      this.screenshotImg.onerror = () => {
-        this.hideLoading();
-        this._showErrorBadge('Görsel yüklenemedi');
-      };
-      this.screenshotImg.src = fileUrl + '?t=' + Date.now();
+      if (prefetchedImage && prefetchedImage !== this.screenshotImg) {
+        prefetchedImage.id = 'screenshot-img';
+        prefetchedImage.alt = this.screenshotImg.alt;
+        this.screenshotImg.replaceWith(prefetchedImage);
+        this.screenshotImg = prefetchedImage;
+      }
+      await new Promise(resolve => {
+        const show = () => { this.screenshotImg.classList.add('loaded'); this.hideLoading(); resolve(); };
+        this.screenshotImg.onload = show;
+        this.screenshotImg.onerror = () => {
+          this.screenshotImg.classList.remove('loaded'); this.hideLoading();
+          this._showErrorBadge('Görüntü yüklenemedi. Tekrar deneyebilir veya Maps’te açabilirsin.');
+          this.retryMapBtn.hidden = false; resolve();
+        };
+        if (this.screenshotImg.src !== new URL(fileUrl, location.href).href ||
+            (this.screenshotImg.complete && !this.screenshotImg.naturalWidth)) this.screenshotImg.src = fileUrl;
+        if (this.screenshotImg.complete && this.screenshotImg.naturalWidth) show();
+      });
     } else {
+      this.screenshotImg.classList.remove('loaded');
       this.hideLoading();
       this._showErrorBadge(errorMsg || 'Screenshot alınamadı');
     }
@@ -227,6 +342,8 @@ class EditUIController {
     this.urlPreview.title       = data.url || '';
     this.urlPreview.dataset.url = data.url || '';
     this.kontrolValueText.textContent = data.kontrol_value || '—';
+    document.getElementById('kontrol-section').hidden = !data.kontrol_value;
+    document.getElementById('record-id').textContent = `Kayıt ${(data.position ?? 0) + 1} / ${data.total ?? 0}`;
 
     // Sıradaki mekan adı
     if (this.nextBusinessName) {
@@ -246,36 +363,31 @@ class EditUIController {
 
     const pct = total > 0 ? Math.round((pos / total) * 100) : 0;
     this.progressFill.style.width = pct + '%';
-    this.progressText.textContent = `${pos} / ${total}`;
+    this.progressText.textContent = `${pos} / ${total} kayıt`;
   }
 
   /* -- Buffer Göstergesi */
-  updateBuffer(queueSize, maxBuffer = 30) {
-    const max = maxBuffer || 30;
-    const filled = queueSize >= max ? 10 : Math.max(queueSize > 0 ? 1 : 0, Math.round((queueSize / max) * 10));
-    if (this.bufferIndicator) {
-      this.bufferIndicator.title = `Önbellek: ${queueSize} / ${max} kayıt hazır`;
-    }
-    this.bufferDots.forEach((dot, i) => {
-      dot.className = 'buffer-dot';
-      if (i < filled) dot.classList.add(filled >= 5 ? 'filled' : 'half');
-    });
+  updateBuffer(buffer = {}) {
+    if (typeof buffer === 'number') buffer = { ready: buffer };
+    const ready = buffer.ready || 0;
+    this.bufferIndicator.dataset.ready = String(ready > 0);
+    this.bufferText.textContent = ready > 0 ? `${ready} harita hazır`
+      : buffer.preparing ? 'Sıradaki haritalar hazırlanıyor…'
+      : buffer.failed ? 'Bazı haritalar açılamadı' : 'Sırada bekleyen harita yok';
+    this.bufferIndicator.title = `${ready} sıradaki harita hazır · ${buffer.preparing || 0} hazırlanıyor`;
   }
 
   /* -- İşlem durumu */
   setActionsLoading(loading) {
+    this._actionsLoading = loading;
+    for (const input of Object.values(this.editFields)) input.disabled = loading;
+    this.brandSelectBtn.disabled = loading;
     this.deleteBtn.disabled = loading;
     this.skipBtn.disabled   = loading;
     this.keepBtn.disabled   = loading;
-    if (loading) {
-      this.deleteBtn.innerHTML = '<span class="spinner" style="width:14px;height:14px;border-width:2px"></span>';
-      this.skipBtn.innerHTML   = '<span class="spinner" style="width:14px;height:14px;border-width:2px"></span>';
-      this.keepBtn.innerHTML   = '<span class="spinner" style="width:14px;height:14px;border-width:2px"></span>';
-    } else {
-      this.deleteBtn.innerHTML = '&#128465; Sil';
-      this.skipBtn.innerHTML   = '&#9197; Atla';
-      this.keepBtn.innerHTML   = '&#10003; Tut';
-    }
+    this.mappingBtn.disabled = loading || !this.schema?.workspace_id;
+    this.openUrlBtn.disabled = loading;
+    document.getElementById('save-state').textContent = '';
   }
 
   /* -- Geçmiş */
@@ -306,6 +418,8 @@ class EditUIController {
 
   /* -- Tamamlandı */
   showCompleted(deletedCount, keptCount, skippedCount) {
+    for (const input of Object.values(this.editFields)) input.disabled = true;
+    this.brandSelectBtn.disabled = true;
     this.completedSub.textContent =
       `${deletedCount} silindi, ${skippedCount || 0} atlandı, ${keptCount} tutuldu.`;
     this.completedScreen.classList.add('visible');
@@ -317,7 +431,7 @@ class EditUIController {
   }
 
   _esc(str) {
-    return String(str ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    return String(str ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
 }
 
@@ -341,7 +455,9 @@ class EditKeyboardHandler {
       if (!this._enabled) return;
 
       const target = e.target;
-      const isInput = target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA');
+      if (target?.closest('dialog')) return;
+      const isInput = target && (['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON'].includes(target.tagName) || target.isContentEditable);
+      if (isInput) return;
 
       // Geri Dön: Alt + Sol Ok, Backspace (input dışında) veya Ctrl + Z
       if ((e.altKey && e.key === 'ArrowLeft') || (e.ctrlKey && (e.key === 'z' || e.key === 'Z')) || (!isInput && e.key === 'Backspace')) {
@@ -400,6 +516,8 @@ class EditApp {
     );
     this._isTransitioning = false;
     this._isActing        = false;
+    this._statusTimer = null;
+    this._prefetched = new Map();
   }
 
   init() {
@@ -408,7 +526,15 @@ class EditApp {
     if (window.WorkspaceClient) {
       window.WorkspaceClient.init({
         onWorkspaceChanged: (ws) => {
+          const previous = this._state.get('workspace');
+          if (this._state.get('isStarted') && previous?.id !== ws.id) {
+            location.assign('/islem'); return;
+          }
           this._state.set('workspace', ws);
+          this._refreshSchema(ws.id);
+          for (const id of ['export-btn', 'completed-export-btn']) {
+            document.getElementById(id).href = `/api/edit/export?workspace_id=${encodeURIComponent(ws.id)}`;
+          }
         }
       }).then(() => {
         const urlParams = new URLSearchParams(window.location.search);
@@ -420,16 +546,92 @@ class EditApp {
   }
 
   _bindEvents() {
+    this._ui.mappingBtn.addEventListener('click', () => this._ui.openMapping(this._state.get('isStarted')));
+    document.getElementById('mapping-close-btn').addEventListener('click', () => this._ui.mappingDialog.close());
+    document.getElementById('mapping-save-btn').addEventListener('click', () => this._saveMapping());
+    this._ui.retryMapBtn.addEventListener('click', async () => {
+      const item = this._state.get('currentItem');
+      if (!item || this._isActing || this._isTransitioning) return;
+      this._isTransitioning = true;
+      try { this._ui.showLoading(); await this._showItem(item); }
+      finally { this._isTransitioning = false; }
+    });
+    this._ui.retryNextBtn.addEventListener('click', () => this._loadNextScreenshot());
     this._ui.startBtn.addEventListener('click', () => this._startSession());
     this._ui.deleteBtn.addEventListener('click', () => this._handleDelete());
     this._ui.skipBtn.addEventListener('click', () => this._handleSkip());
     this._ui.keepBtn.addEventListener('click', () => this._handleKeep());
     if (this._ui.backBtn) this._ui.backBtn.addEventListener('click', () => this._handleBack());
     this._ui.openUrlBtn.addEventListener('click', () => this._handleOpenUrl());
+    this._ui.brandSelectBtn.addEventListener('click', () => {
+      const input = this._ui.editFields.brand;
+      input.focus();
+      try { input.showPicker?.(); } catch (_) { /* Yazı alanından da seçim yapılabilir. */ }
+    });
     this._ui.urlPreview.addEventListener('click', () => {
       const url = this._ui.urlPreview.dataset.url;
       if (url) navigator.clipboard.writeText(url).then(() => this._toast.success('URL kopyalandı!'));
     });
+  }
+
+  async _refreshSchema(id) {
+    try {
+      const schema = await this._api.getSchema(id);
+      if (id && this._state.get('workspace')?.id !== id) return;
+      this._ui.setSchema(schema);
+    } catch (_) { this._ui.mappingBtn.disabled = true; }
+  }
+
+  async _saveMapping() {
+    const button = document.getElementById('mapping-save-btn');
+    const error = document.getElementById('mapping-error');
+    button.disabled = true; error.textContent = '';
+    try {
+      const id = this._ui.schema.workspace_id;
+      await this._api.saveMapping(id, this._ui.getMapping());
+      await this._refreshSchema(id);
+      if (this._state.get('isStarted')) {
+        this._ui.setFieldOptions(await this._api.getFieldOptions());
+        const item = this._state.get('currentItem');
+        if (item) {
+          const draft = Object.fromEntries(Object.entries(this._ui.getFieldValues())
+            .filter(([key, value]) => value !== (item.fields?.[key] || '')));
+          item.fields = await this._api.getFields(item.row_index);
+          this._ui.updateFields({ ...item.fields, ...draft });
+        }
+      }
+      this._ui.mappingDialog.close();
+      this._toast.success('Sütun eşleştirmeleri kaydedildi.');
+    } catch (err) { error.textContent = err.message; }
+    finally { button.disabled = false; }
+  }
+
+  _preloadImages(previews = []) {
+    for (const preview of previews) {
+      if (!preview.file_url || this._prefetched.has(preview.file_url)) continue;
+      const img = new Image();
+      img.decoding = 'async';
+      img.onload = () => img.decode?.().catch(() => {});
+      img.onerror = () => this._prefetched.delete(preview.file_url);
+      this._prefetched.set(preview.file_url, img);
+      img.src = preview.file_url;
+    }
+    while (this._prefetched.size > 6) this._prefetched.delete(this._prefetched.keys().next().value);
+  }
+
+  async _pollStatus() {
+    clearTimeout(this._statusTimer);
+    if (!this._state.get('isStarted') || this._state.get('sourceCompleted')) return;
+    try {
+      if (!document.hidden) {
+        const data = await this._api.getStatus();
+        if (data.status === 'running') {
+          this._ui.updateBuffer(data.buffer || data.worker_stats?.queue_size || 0);
+          this._preloadImages(data.previews);
+        }
+      }
+    } catch (_) { /* Buffer takibindeki bağlantı hatası kaydı kesintiye uğratmaz. */ }
+    if (!this._state.get('sourceCompleted')) this._statusTimer = setTimeout(() => this._pollStatus(), 1500);
   }
 
   /* -- Oturum Başlat */
@@ -447,10 +649,13 @@ class EditApp {
     this._ui.showStartLoading();
     try {
       const data = await this._api.startSession(startIndex, wsId);
+      this._api.getFieldOptions().then(options => this._ui.setFieldOptions(options))
+        .catch(() => this._toast.error('Öneriler alınamadı; marka ve kategoriyi elle yazabilirsiniz.'));
       this._state.update({ isStarted: true, totalPending: data.pending });
       this._ui.hideStartScreen();
       this._ui.activateUI();
       this._keyboard.enable();
+      this._pollStatus();
       this._toast.success(`İndeks ${data.start_index}'den itibaren ${data.pending} kayıt işlenecek`);
       await this._loadNextScreenshot();
     } catch (err) {
@@ -463,13 +668,21 @@ class EditApp {
   async _loadNextScreenshot() {
     if (this._isTransitioning) return;
     this._isTransitioning = true;
+    this._state.update({ currentItem: null, currentRowIndex: null });
     this._ui.showLoading();
     this._ui.setActionsLoading(true);
 
     try {
-      const data = await this._api.getNextScreenshot();
+      let data = this._state.get('forwardStack').pop() || await this._api.getNextScreenshot();
+      while (data.status === 'preparing') {
+        this._ui.updateBuffer(data.buffer);
+        this._ui.loadingText.textContent = 'Sıradaki harita hazırlanıyor…';
+        await new Promise(resolve => setTimeout(resolve, 500));
+        data = await this._api.getNextScreenshot();
+      }
       if (data.status === 'completed') {
         this._state.set('sourceCompleted', true);
+        clearTimeout(this._statusTimer);
         this._ui.showCompleted(
           this._state.get('deletedCount'),
           this._state.get('keptCount'),
@@ -477,18 +690,21 @@ class EditApp {
         );
         return;
       }
-      this._showItem(data);
+      await this._showItem(data);
     } catch (err) {
       this._toast.error(`Screenshot alınamadı: ${err.message}`);
       this._ui.hideLoading();
-      this._ui.setActionsLoading(false);
+      this._ui.setActionsLoading(!this._state.get('currentItem'));
+      this._ui.retryNextBtn.hidden = false;
     } finally {
       this._isTransitioning = false;
     }
   }
 
-  _showItem(item) {
+  async _showItem(item) {
     if (!item) return;
+    this._ui.setActionsLoading(true);
+    this._ui.updateFields(item.fields);
     this._state.update({
       currentItem:     item,
       currentRowIndex: item.row_index,
@@ -508,8 +724,9 @@ class EditApp {
       skippedCount:  this._state.get('skippedCount'),
       keptCount:     this._state.get('keptCount'),
     });
-    this._ui.updateBuffer(item.queue_size ?? this._state.get('queueSize'));
-    this._ui.displayScreenshot(item.file_url, !!item.error, item.error);
+    this._ui.updateBuffer(item.buffer || item.queue_size || 0);
+    document.getElementById('image-source').textContent = item.from_cache ? 'Önbellekten yüklendi' : 'Harita görüntüsü';
+    await this._ui.displayScreenshot(item.file_url, !!item.error, item.error, this._prefetched.get(item.file_url));
     this._ui.setActionsLoading(false);
     this._ui.setBackEnabled(this._state.get('backStack').length > 0);
   }
@@ -586,7 +803,14 @@ class EditApp {
     this._isActing = true;
     this._ui.setActionsLoading(true);
     try {
-      await this._api.sendAction(rowIndex, 'keep');
+      const fields = this._ui.getFieldValues();
+      await this._api.sendAction(rowIndex, 'keep', fields);
+      this._refreshSchema(this._state.get('workspace')?.id);
+      current.fields = { ...current.fields, ...fields };
+      for (const [key, value] of Object.entries(fields)) {
+        const list = this._ui.editFields[key].list;
+        if (value && ![...list.options].some(option => option.value === value)) list.append(new Option(value, value));
+      }
       const name = this._state.get('currentName');
       this._ui.addHistory(name, 'keep');
       this._state.set('keptCount', this._state.get('keptCount') + 1);
@@ -615,13 +839,16 @@ class EditApp {
       return;
     }
 
-    const { item, action } = backStack.pop();
-    this._ui.setBackEnabled(backStack.length > 0);
+    const { item, action } = backStack[backStack.length - 1];
+    this._isActing = true;
 
     try {
       this._ui.setActionsLoading(true);
       // Backend'deki işlemi geri al
       await this._api.undoAction(item.row_index);
+      backStack.pop();
+      const current = this._state.get('currentItem');
+      if (current) this._state.get('forwardStack').push(current);
 
       // İstatistikleri düşür
       if (action === 'delete') {
@@ -638,10 +865,12 @@ class EditApp {
       }
 
       this._toast.info(`↩ Geri dönüldü: "${item.name}"`);
-      this._showItem(item);
+      await this._showItem(item);
     } catch (err) {
       this._toast.error(`Geri alma hatası: ${err.message}`);
       this._ui.setActionsLoading(false);
+    } finally {
+      this._isActing = false;
     }
   }
 

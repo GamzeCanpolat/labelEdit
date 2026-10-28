@@ -26,6 +26,7 @@ from typing import Any, Optional
 from config import DATA_DIR, edit_db_path, find_edit_input_file
 from data_model import ColumnRole, PlaceRecord, SheetSchema
 from excel_schema import detect_columns, get_schema, iter_data_rows
+from edit_fields import field_columns, read_fields, read_options, write_fields
 
 logger = logging.getLogger(__name__)
 
@@ -61,8 +62,9 @@ def _to_sql_value(v: Any) -> Any:
 class EditDataManager:
     """Düzenle akışı için SQLite tabanlı veri yöneticisi (public API eski sürümle aynı)."""
 
-    def __init__(self, source_file: Optional[str] = None) -> None:
+    def __init__(self, source_file: Optional[str] = None, require_status: bool = True) -> None:
         self._source_path: Path = find_edit_input_file(source_file)
+        self._require_status = require_status
         self._lock = threading.RLock()
         self._pending_indices: list[int] = []
         self._action_history: dict[int, str] = {}
@@ -109,7 +111,7 @@ class EditDataManager:
                 self._meta_set("schema", json.dumps(self.schema.to_dict(), ensure_ascii=False))
         else:
             self._import_source()
-        self.schema.require(ColumnRole.MAPS_URL, ColumnRole.STATUS)
+        self.schema.require(ColumnRole.MAPS_URL, *([ColumnRole.STATUS] if self._require_status else []))
         logger.info(
             "[EditDataManager] Kolonlar: "
             + ", ".join(f"{k}='{m.column}' ({m.method}, {m.confidence:.2f})" for k, m in self.schema.matches.items())
@@ -128,7 +130,7 @@ class EditDataManager:
 
     def _import_source(self) -> None:
         """Kaynağı akış halinde (düşük RAM) içe aktarır; tablo değişimi atomiktir."""
-        schema = get_schema(self._source_path, ColumnRole.MAPS_URL, ColumnRole.STATUS)
+        schema = get_schema(self._source_path, ColumnRole.MAPS_URL, *([ColumnRole.STATUS] if self._require_status else []))
         cols = schema.columns
         n = len(cols)
         kinds = [set() for _ in range(n)]
@@ -206,16 +208,17 @@ class EditDataManager:
         return self.schema.column(ColumnRole.NAME)
 
     def _select_fields(self) -> str:
-        parts = [f"{_q(self._url_col)} AS u", f"{_q(self._kontrol_col)} AS k"]
+        parts = [f"{_q(self._url_col)} AS u", f"{_q(self._kontrol_col)} AS k" if self._kontrol_col else "NULL AS k"]
         parts.append(f"{_q(self._name_col)} AS n" if self._name_col else "NULL AS n")
         pid = self.schema.column(ColumnRole.PLACE_ID)
         parts.append(f"{_q(pid)} AS p" if pid else "NULL AS p")
         return ", ".join(parts)
 
     def _pending_where(self) -> str:
-        k, u = _q(self._kontrol_col), _q(self._url_col)
+        u = _q(self._url_col)
+        kontrol_filter = f"AND TRIM(COALESCE({_q(self._kontrol_col)},''))<>'' " if self._kontrol_col else ""
         return (f"{STATUS_COL}='{STATUS_PENDING}' "
-                f"AND TRIM(COALESCE({k},''))<>'' AND TRIM(COALESCE({u},''))<>''")
+                f"{kontrol_filter}AND TRIM(COALESCE({u},''))<>''")
 
     def _load_pending(self) -> None:
         """Kontrol ve URL dolu, henüz karar verilmemiş satırları listeler."""
@@ -241,6 +244,8 @@ class EditDataManager:
             return self._conn.execute(f"SELECT * FROM {TABLE} WHERE id=?", (row_index,)).fetchone()
 
     def get_kontrol_value(self, row_index: int) -> str:
+        if not self._kontrol_col:
+            return ""
         with self._lock:
             row = self._conn.execute(
                 f"SELECT {_q(self._kontrol_col)} FROM {TABLE} WHERE id=?", (row_index,)).fetchone()
@@ -297,9 +302,28 @@ class EditDataManager:
         self._drop_pending(row_index)
         logger.info(f"[EditDataManager] Satır silindi — row_index={row_index}")
 
-    def keep_row(self, row_index: int) -> None:
+    def get_edit_fields(self, row_index: int) -> dict:
+        with self._lock:
+            return read_fields(self._conn, TABLE, "id", self._columns, row_index)
+
+    def get_edit_schema(self) -> dict:
+        return {"columns": list(self._columns), "mapping": {
+            **{k: m.column for k, m in self.schema.matches.items()}, **field_columns(self._columns)}}
+
+    def get_edit_options(self) -> dict:
+        with self._lock:
+            return read_options(self._conn, TABLE, self._columns)
+
+    def keep_row(self, row_index: int, fields: Optional[dict] = None) -> None:
         """Satırı veritabanında 'tutuldu' olarak işaretler."""
-        self._set_status(row_index, STATUS_KEPT)
+        with self._lock, self._conn:
+            added = write_fields(self._conn, TABLE, "id", self._columns, row_index, fields or {})
+            columns = self._columns + added
+            if added:
+                self._conn.execute("INSERT OR REPLACE INTO meta VALUES (?,?)",
+                                   ("columns", json.dumps(columns, ensure_ascii=False)))
+            self._conn.execute(f"UPDATE {TABLE} SET {STATUS_COL}=? WHERE id=?", (STATUS_KEPT, row_index))
+        self._columns = columns
         self._action_history[row_index] = "keep"
         self._drop_pending(row_index)
         logger.info(f"[EditDataManager] Satır tutuldu — row_index={row_index}")

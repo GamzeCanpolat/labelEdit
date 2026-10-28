@@ -37,6 +37,7 @@ from config import SCREENSHOTS_DIR, STATIC_DIR, HOST, PORT, BUFFER_SIZE, list_in
 from data_manager import DataManager
 from data_model import ColumnDetectionError
 from edit_data_manager import EditDataManager, export_excel
+from edit_fields import field_columns, validate_fields
 from excel_schema import scan_input_dir
 from session_manager import SessionManager, current_engine
 from screenshot_worker import ScreenshotWorker, ScreenshotItem
@@ -70,7 +71,9 @@ class AppState:
     edit_screenshot_worker: Optional[ScreenshotWorker] = None
     edit_current_position: int = 0
     edit_current_item: Optional[ScreenshotItem] = None
+    edit_current_resolved: bool = True
     edit_is_started: bool = False
+    edit_workspace_id: Optional[str] = None
 
 
 state = AppState()
@@ -173,6 +176,7 @@ class SessionStartResponse(BaseModel):
 class EditActionRequest(BaseModel):
     row_index: int
     action: str   # "delete" | "keep" | "skip"
+    fields: Dict[str, str] = Field(default_factory=dict)
 
 
 class EditUndoRequest(BaseModel):
@@ -192,6 +196,13 @@ class SheetChangeRequest(BaseModel):
     sheet_name: str
 
 
+def _screenshot_url(file_path: str) -> Optional[str]:
+    path = Path(file_path) if file_path else None
+    if path and path.is_file():
+        return f"/screenshots/{path.name}?v={path.stat().st_mtime_ns}"
+    return None
+
+
 def _item_response(item: ScreenshotItem, worker: ScreenshotWorker) -> dict:
     resp = {
         "status": "ok",
@@ -204,10 +215,7 @@ def _item_response(item: ScreenshotItem, worker: ScreenshotWorker) -> dict:
         "error": item.error,
         "from_cache": item.from_cache,
     }
-    if item.file_path and Path(item.file_path).exists():
-        resp["file_url"] = f"/screenshots/{Path(item.file_path).name}"
-    else:
-        resp["file_url"] = None
+    resp["file_url"] = _screenshot_url(item.file_path)
     return resp
 
 
@@ -577,7 +585,8 @@ async def serve_screenshot(filename: str):
     file_path = (SCREENSHOTS_DIR / filename).resolve()
     if file_path.parent != SCREENSHOTS_DIR.resolve() or not file_path.is_file():
         raise HTTPException(status_code=404, detail="Screenshot bulunamadı.")
-    return FileResponse(str(file_path), media_type=_MEDIA.get(file_path.suffix.lower(), "application/octet-stream"))
+    return FileResponse(str(file_path), media_type=_MEDIA.get(file_path.suffix.lower(), "application/octet-stream"),
+                        headers={"Cache-Control": "private, max-age=86400"})
 
 
 # ── Static files + Ana sayfa ─────────────────────────────────────────────────
@@ -610,6 +619,9 @@ async def label_page():
 async def edit_start_session(request: Optional[SessionStartRequest] = None):
     request = request or SessionStartRequest()
     await _stop_edit_flow(close_data=True)
+    state.edit_workspace_id = None
+    state.edit_current_item = None
+    state.edit_current_resolved = True
 
     try:
         start_index = request.start_index
@@ -620,8 +632,9 @@ async def edit_start_session(request: Optional[SessionStartRequest] = None):
             if not ws:
                 raise HTTPException(status_code=404, detail=f"Çalışma ortamı bulunamadı: {ws_id}")
 
-            state.active_workspace_id = ws_id
-            all_records = await run_in_threadpool(workspace_mgr.get_place_records, ws_id, start_index)
+            state.edit_workspace_id = ws_id
+            all_records = await run_in_threadpool(workspace_mgr.get_place_records, ws_id, start_index,
+                                                 status_filter="bekliyor", require_url=True)
             pending_count = len(all_records)
             if pending_count == 0:
                 raise HTTPException(status_code=404, detail="Kayıt bulunamadı.")
@@ -647,8 +660,7 @@ async def edit_start_session(request: Optional[SessionStartRequest] = None):
             )
 
         # Fallback to EditDataManager
-        state.active_workspace_id = None
-        state.edit_data_manager = await run_in_threadpool(EditDataManager, request.source_file)
+        state.edit_data_manager = await run_in_threadpool(EditDataManager, request.source_file, False)
         all_records = await run_in_threadpool(state.edit_data_manager.get_place_records, start_index)
         pending_count = len(all_records)
         if pending_count == 0:
@@ -688,19 +700,63 @@ async def edit_get_next_screenshot():
     worker = state.edit_screenshot_worker
     if not state.edit_is_started or not worker:
         raise HTTPException(status_code=400, detail="Oturum başlatılmamış.")
-    if worker.is_empty():
-        return JSONResponse({"status": "completed", "message": "Tüm kayıtlar işlendi!"})
-    item = await worker.get_next()
+    item = state.edit_current_item if not state.edit_current_resolved else None
     if item is None:
-        raise HTTPException(status_code=504, detail="Screenshot alınamadı.")
-    state.edit_current_item = item
-    state.edit_current_position += 1
+        if worker.is_empty():
+            return JSONResponse({"status": "completed", "message": "Tüm kayıtlar işlendi!"})
+        item = await worker.get_next(wait_timeout=2.0, consume_on_timeout=False)
+        if item is None:
+            return JSONResponse({"status": "preparing", "buffer": worker.buffer_status()})
+        state.edit_current_item = item
+        state.edit_current_resolved = False
+        state.edit_current_position += 1
     rec = worker.peek_record(item.position)
     nxt = worker.peek_record(item.position + 1)
     resp = _item_response(item, worker)
     resp["kontrol_value"] = rec.status_value if rec else ""
     resp["next_name"] = nxt.name if nxt else None
+    resp["fields"] = await _edit_fields(item.row_index)
+    resp["buffer"] = worker.buffer_status()
     return JSONResponse(resp)
+
+
+async def _edit_fields(row_index: int) -> dict:
+    if state.edit_workspace_id:
+        return await run_in_threadpool(workspace_mgr.get_edit_fields, state.edit_workspace_id, row_index)
+    if state.edit_data_manager:
+        return await run_in_threadpool(state.edit_data_manager.get_edit_fields, row_index)
+    raise HTTPException(status_code=400, detail="İşlem oturumu hazır değil.")
+
+
+@app.get("/api/edit/field-options")
+async def edit_field_options():
+    if state.edit_workspace_id:
+        return await run_in_threadpool(workspace_mgr.get_edit_options, state.edit_workspace_id)
+    if state.edit_data_manager:
+        return await run_in_threadpool(state.edit_data_manager.get_edit_options)
+    raise HTTPException(status_code=400, detail="İşlem oturumu hazır değil.")
+
+
+@app.get("/api/edit/schema")
+async def edit_schema(workspace_id: Optional[str] = None):
+    ws_id = workspace_id or state.edit_workspace_id
+    if ws_id:
+        ws = await run_in_threadpool(workspace_mgr.get_workspace, ws_id)
+        if not ws:
+            raise HTTPException(status_code=404, detail="Çalışma ortamı bulunamadı.")
+        return {"workspace_id": ws_id, "columns": ws["columns"], "mapping": {
+            **ws["column_mapping"], **field_columns(ws["columns"], ws["column_mapping"])}}
+    if state.edit_data_manager:
+        return state.edit_data_manager.get_edit_schema()
+    raise HTTPException(status_code=400, detail="Önce bir Excel dosyası seçin.")
+
+
+@app.get("/api/edit/fields/{row_index}")
+async def edit_row_fields(row_index: int):
+    try:
+        return await _edit_fields(row_index)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 @app.post("/api/edit/action")
@@ -710,23 +766,29 @@ async def edit_action(request: EditActionRequest):
         raise HTTPException(status_code=422, detail="Geçersiz action.")
 
     try:
-        if state.active_workspace_id:
-            await run_in_threadpool(workspace_mgr.update_action, state.active_workspace_id, request.row_index, action)
-            status_name = "deleted" if action == "delete" else ("skipped" if action == "skip" else "kept")
-            return JSONResponse({"status": status_name, "row_index": request.row_index})
-
-        if not state.edit_data_manager:
-            raise HTTPException(status_code=400, detail="EditDataManager veya Çalışma Ortamı hazır değil.")
-
-        if action == "delete":
-            state.edit_data_manager.delete_row(request.row_index)
-            return JSONResponse({"status": "deleted", "row_index": request.row_index})
-        elif action == "skip":
-            state.edit_data_manager.skip_row(request.row_index)
-            return JSONResponse({"status": "skipped", "row_index": request.row_index})
+        validate_fields(request.fields)
+        if state.edit_workspace_id:
+            await run_in_threadpool(workspace_mgr.update_action, state.edit_workspace_id,
+                                    request.row_index, action, request.fields)
         else:
-            state.edit_data_manager.keep_row(request.row_index)
-            return JSONResponse({"status": "kept", "row_index": request.row_index})
+            if not state.edit_data_manager:
+                raise HTTPException(status_code=400, detail="EditDataManager veya Çalışma Ortamı hazır değil.")
+            if action == "delete":
+                state.edit_data_manager.delete_row(request.row_index)
+            elif action == "skip":
+                state.edit_data_manager.skip_row(request.row_index)
+            else:
+                state.edit_data_manager.keep_row(request.row_index, request.fields)
+        if state.edit_current_item and state.edit_current_item.row_index == request.row_index:
+            state.edit_current_resolved = True
+        status_name = {"delete": "deleted", "skip": "skipped", "keep": "kept"}[action]
+        return JSONResponse({"status": status_name, "row_index": request.row_index})
+    except HTTPException:
+        raise
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -734,8 +796,8 @@ async def edit_action(request: EditActionRequest):
 @app.post("/api/edit/action/undo")
 async def edit_undo_action(request: EditUndoRequest):
     try:
-        if state.active_workspace_id:
-            undone = await run_in_threadpool(workspace_mgr.undo_action, state.active_workspace_id, request.row_index)
+        if state.edit_workspace_id:
+            undone = await run_in_threadpool(workspace_mgr.undo_action, state.edit_workspace_id, request.row_index)
             return JSONResponse({"status": "ok", "undone_action": undone, "row_index": request.row_index})
 
         if not state.edit_data_manager:
@@ -759,9 +821,12 @@ async def get_edit_status():
         return JSONResponse({"status": "not_started"})
 
     stats = state.edit_screenshot_worker.get_stats() if state.edit_screenshot_worker else {}
+    worker = state.edit_screenshot_worker
+    previews = [{"row_index": p["row_index"], "name": p["name"], "file_url": _screenshot_url(p["file_path"])}
+                for p in worker.ready_previews()] if worker else []
     pending = 0
-    if state.active_workspace_id:
-        ws_stats = workspace_mgr.get_workspace_stats(state.active_workspace_id)
+    if state.edit_workspace_id:
+        ws_stats = await run_in_threadpool(workspace_mgr.get_workspace_stats, state.edit_workspace_id)
         pending = ws_stats.get("pending", 0)
     elif state.edit_data_manager:
         pending = state.edit_data_manager.get_pending_count()
@@ -771,13 +836,15 @@ async def get_edit_status():
         "current_position": state.edit_current_position,
         "pending": pending,
         "worker_stats": stats,
+        "buffer": worker.buffer_status() if worker else {},
+        "previews": previews,
     })
 
 
 @app.get("/api/edit/export")
 def edit_export_excel(source_file: Optional[str] = None, workspace_id: Optional[str] = None):
     """Veritabanındaki güncel hali (silinenler hariç) Excel olarak indirir."""
-    ws_id = workspace_id or (state.active_workspace_id if not source_file and not state.edit_data_manager else None)
+    ws_id = workspace_id or (state.edit_workspace_id if not source_file and not state.edit_data_manager else None)
     fd, tmp = tempfile.mkstemp(suffix=".xlsx")
     os.close(fd)
 

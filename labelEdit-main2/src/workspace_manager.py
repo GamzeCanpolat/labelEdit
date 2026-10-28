@@ -19,6 +19,7 @@ import sqlite3
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from datetime import date, datetime, time as dtime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -34,7 +35,8 @@ from data_model import (
     clean_cell,
     parse_maps_url,
 )
-from excel_schema import detect_columns, normalize_header, unique_columns
+from excel_schema import detect_columns, detect_header_row, normalize_header, unique_columns
+from edit_fields import field_columns, read_fields, read_options, write_fields
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +65,19 @@ def _to_sql_value(v: Any) -> Any:
     return str(v) if not isinstance(v, (int, float, bool)) else v
 
 
+@contextmanager
+def _connection(path):
+    """Transaction bittikten sonra Windows dosya kilidini de serbest bırakır."""
+    conn = sqlite3.connect(path, timeout=30.0, check_same_thread=False)
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        with conn:
+            yield conn
+    finally:
+        conn.close()
+
+
 class WorkspaceManager:
     """Tüm çalışma ortamlarını, SQLite tablolarını ve sütun eşleştirmelerini yönetir."""
 
@@ -73,11 +88,8 @@ class WorkspaceManager:
         self._lock = threading.RLock()
         self._init_registry()
 
-    def _get_registry_conn(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        return conn
+    def _get_registry_conn(self):
+        return _connection(self.db_path)
 
     def _init_registry(self) -> None:
         with self._lock, self._get_registry_conn() as conn:
@@ -126,7 +138,7 @@ class WorkspaceManager:
                     continue
 
                 try:
-                    with sqlite3.connect(edit_file) as econ:
+                    with _connection(edit_file) as econ:
                         econ.row_factory = sqlite3.Row
                         cur = econ.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='mekanlar'")
                         if not cur.fetchone():
@@ -299,12 +311,8 @@ class WorkspaceManager:
             return "mekanlar", "id", "_durum"
         return "records", "_row_index", "_status"
 
-    def _get_workspace_conn(self, ws_id: str) -> sqlite3.Connection:
-        db_file = self._get_workspace_db_path(ws_id)
-        conn = sqlite3.connect(db_file, timeout=30.0, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        return conn
+    def _get_workspace_conn(self, ws_id: str):
+        return _connection(self._get_workspace_db_path(ws_id))
 
     def get_workspace_columns(self, ws_id: str) -> List[str]:
         """Kayıtlar tablosundaki tüm kullanıcı sütunlarını döndürür (_ ile başlayan meta sütunlar hariç)."""
@@ -379,7 +387,7 @@ class WorkspaceManager:
             raise ValueError("Dosyada işlenecek veri satırı bulunamadı.")
 
         # 2. SQLite veritabanı ve records tablosunu oluştur
-        with sqlite3.connect(ws_db_path) as conn:
+        with _connection(ws_db_path) as conn:
             conn.execute("PRAGMA journal_mode=WAL")
             # Güvenli sütun tanımları
             col_defs = ", ".join(f"{_safe_sql_col(c)} TEXT" for c in columns)
@@ -470,8 +478,7 @@ class WorkspaceManager:
             has_maps_header = False
 
             # İlk 25 satırı tara
-            for r in range(1, min(25, max_r + 1)):
-                row_vals = [c.value for c in ws[r]]
+            for row_vals in ws.iter_rows(max_row=min(25, max_r), values_only=True):
                 for v in row_vals:
                     if v is None:
                         continue
@@ -510,23 +517,14 @@ class WorkspaceManager:
         """Dosyayı okuyup sütun listesi ve satır değerlerini döndürür."""
         suffix = file_path.suffix.lower()
         if suffix in (".xlsx", ".xlsm"):
-            wb = openpyxl.load_workbook(file_path, data_only=True, keep_vba=suffix == ".xlsm")
+            wb = openpyxl.load_workbook(file_path, data_only=True, read_only=True)
             sheet_name = preferred_sheet if preferred_sheet and preferred_sheet in wb.sheetnames else self._detect_best_sheet(wb)
             ws = wb[sheet_name]
 
-            # Başlık satırını bul
-            header_row_idx = 1
-            headers = []
-            for r in range(1, min(15, ws.max_row + 1)):
-                row_vals = [c.value for c in ws[r]]
-                non_empty = [v for v in row_vals if v is not None and str(v).strip() != ""]
-                if len(non_empty) >= 2:
-                    header_row_idx = r
-                    headers = row_vals
-                    break
-
-            if not headers:
-                headers = [f"Kolon_{i+1}" for i in range(ws.max_column)]
+            head = list(ws.iter_rows(max_row=min(40, ws.max_row), values_only=True))
+            detected = detect_header_row(head)
+            header_row_idx = detected + 1
+            headers = list(head[detected]) if detected >= 0 else [f"Kolon_{i+1}" for i in range(ws.max_column)]
             unique_cols = unique_columns(headers)
 
             data_rows = []
@@ -534,6 +532,7 @@ class WorkspaceManager:
                 if any(v is not None and str(v).strip() != "" for v in row):
                     data_rows.append(list(row))
 
+            wb.close()
             return unique_cols, data_rows, sheet_name
 
         elif suffix == ".csv":
@@ -542,14 +541,18 @@ class WorkspaceManager:
                 try:
                     with open(file_path, "r", encoding=enc) as f:
                         sample = f.read(4096)
-                        delimiter = ";" if sample.count(";") > sample.count(",") else ","
+                        try:
+                            delimiter = csv.Sniffer().sniff(sample, delimiters=",;\t|").delimiter
+                        except csv.Error:
+                            delimiter = ";" if sample.count(";") > sample.count(",") else ","
                         f.seek(0)
                         reader = csv.reader(f, delimiter=delimiter)
                         rows = list(reader)
                         if rows:
-                            headers = rows[0]
+                            detected = detect_header_row(rows[:40])
+                            headers = rows[detected] if detected >= 0 else [f"Kolon_{i+1}" for i in range(max(map(len, rows)))]
                             unique_cols = unique_columns(headers)
-                            data_rows = rows[1:]
+                            data_rows = rows[detected + 1:]
                             return unique_cols, data_rows, None
                 except Exception:
                     continue
@@ -576,7 +579,7 @@ class WorkspaceManager:
 
         ws_db_path = self._get_workspace_db_path(ws_id)
 
-        with sqlite3.connect(ws_db_path, timeout=30.0) as conn:
+        with _connection(ws_db_path) as conn:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("DROP TABLE IF EXISTS records")
 
@@ -706,6 +709,13 @@ class WorkspaceManager:
             raise KeyError(f"Çalışma ortamı bulunamadı: {ws_id}")
 
         existing_cols = ws["columns"]
+        for role, column in new_mapping.items():
+            if column and column not in existing_cols:
+                raise ValueError(f"Seçilen sütun tabloda mevcut değil: {column}")
+        combined = {**ws["column_mapping"], **new_mapping}
+        selected = [v for k, v in combined.items() if v and k in ("brand", "main_category", "sub_category", "poi_state", "maps_url", "name")]
+        if len(selected) != len(set(selected)):
+            raise ValueError("Her alan için farklı bir sütun seçin.")
         # URL kolonu var mı kontrolü
         maps_col = new_mapping.get("maps_url")
         if maps_col and maps_col not in existing_cols:
@@ -783,6 +793,7 @@ class WorkspaceManager:
         start_index: int = 0,
         limit: Optional[int] = None,
         status_filter: Optional[str] = None,
+        require_url: bool = False,
     ) -> List[PlaceRecord]:
         """
         Oturum motorunun işleyeceği PlaceRecord nesnelerini SQLite tablosundan çeker.
@@ -808,6 +819,8 @@ class WorkspaceManager:
             table_name, row_idx_col, status_col_name = self._get_table_info(conn)
             query = f"SELECT * FROM {_safe_sql_col(table_name)} WHERE {_safe_sql_col(row_idx_col)} >= ?"
             params: List[Any] = [start_index]
+            if require_url:
+                query += f" AND TRIM(COALESCE({_safe_sql_col(maps_col)}, '')) != ''"
 
             if status_filter:
                 query += f" AND {_safe_sql_col(status_col_name)} = ?"
@@ -895,7 +908,23 @@ class WorkspaceManager:
         with self._lock, self._get_registry_conn() as conn:
             conn.execute("UPDATE workspaces SET updated_at=? WHERE id=?", (datetime.now().isoformat(), ws_id))
 
-    def update_action(self, ws_id: str, row_index: int, action: str) -> None:
+    def get_edit_fields(self, ws_id: str, row_index: int) -> dict:
+        ws = self.get_workspace(ws_id)
+        if not ws:
+            raise KeyError("Çalışma ortamı bulunamadı.")
+        with self._lock, self._get_workspace_conn(ws_id) as conn:
+            table, index_col, _ = self._get_table_info(conn)
+            return read_fields(conn, table, index_col, ws["columns"], row_index, ws["column_mapping"])
+
+    def get_edit_options(self, ws_id: str) -> dict:
+        ws = self.get_workspace(ws_id)
+        if not ws:
+            raise KeyError("Çalışma ortamı bulunamadı.")
+        with self._lock, self._get_workspace_conn(ws_id) as conn:
+            table, _, _ = self._get_table_info(conn)
+            return read_options(conn, table, ws["columns"], ws["column_mapping"])
+
+    def update_action(self, ws_id: str, row_index: int, action: str, fields: Optional[dict] = None) -> None:
         """
         Düzenle akışı aksiyonu (tut, sil, atla) doğrudan SQLite tablosuna yazılır.
         """
@@ -919,14 +948,19 @@ class WorkspaceManager:
         now_iso = datetime.now().isoformat()
         with self._lock, self._get_workspace_conn(ws_id) as conn:
             table_name, row_idx_col, status_col_name = self._get_table_info(conn)
+            read_fields(conn, table_name, row_idx_col, ws["columns"], row_index)
+            if action_clean == "keep":
+                added = write_fields(conn, table_name, row_idx_col, ws["columns"], row_index, fields or {}, ws["column_mapping"])
+                # Eski edit veritabanları dışa aktarma için sütun listesini meta'da tutar.
+                if added and table_name == "mekanlar":
+                    conn.execute("INSERT OR REPLACE INTO meta VALUES (?,?)",
+                                 ("columns", json.dumps(ws["columns"] + added, ensure_ascii=False)))
             cur_cols = [r["name"] for r in conn.execute(f"PRAGMA table_info({_safe_sql_col(table_name)})").fetchall()]
             has_updated_at = "_updated_at" in cur_cols
 
             set_parts = [f"{_safe_sql_col(status_col_name)}=?"]
             vals = [db_status]
-            if status_col and status_col in ws["columns"] and status_col != status_col_name:
-                set_parts.append(f"{_safe_sql_col(status_col)}=?")
-                vals.append(db_status)
+            # Kaynak kontrol/açık-kapalı bilgisi kararın dahili durumundan bağımsızdır.
             if has_updated_at:
                 set_parts.append("_updated_at=?")
                 vals.append(now_iso)
