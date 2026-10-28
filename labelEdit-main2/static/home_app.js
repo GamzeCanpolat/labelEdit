@@ -30,15 +30,14 @@ const HomeApp = {
 
   async refresh() {
     try {
-      const [listRes, activeRes] = await Promise.all([
-        fetch('/api/workspaces').then(r => r.json()),
-        fetch('/api/workspaces/active').then(r => r.json()),
-      ]);
-
-      this.workspaces = listRes || [];
+      const response = await fetch('/api/workspaces');
+      if (!response.ok) throw new Error('Dosya listesi alınamadı.');
+      const listRes = await response.json();
+      if (!Array.isArray(listRes)) throw new Error('Dosya listesi yanıtı geçersiz.');
+      this.workspaces = listRes;
 
       // Aktif olanı veya ilkini seç
-      const activeWs = activeRes?.active;
+      const activeWs = this.workspaces.find(ws => ws.is_active);
       if (activeWs) {
         this.selectedWsId = activeWs.id;
       } else if (this.workspaces.length > 0 && !this.selectedWsId) {

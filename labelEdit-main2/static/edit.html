@@ -23,8 +23,9 @@
         <div class="start-icon" aria-hidden="true">⌖</div><h1 class="start-title">Dosyanı seç, incelemeye başla</h1>
         <p class="start-subtitle">Haritayı kontrol et. Marka ve kategoriyi düzenle.<br />Tut, Sil veya Atla ile sıradaki kayda geç.</p>
         <div id="ws-start-card"></div>
+        <label class="start-index-field assignee-field" id="assignee-field" for="assignee-select" hidden><span>Kontrol eden</span><select id="assignee-select" class="form-select"><option value="">Tüm kayıtlar</option></select><small id="assignee-hint"></small></label>
         <details class="start-options"><summary>Başlangıç kaydını seç</summary><label class="start-index-field" for="start-index-input"><span>Başlangıç indeksi</span><input id="start-index-input" type="text" inputmode="numeric" value="0" autocomplete="off" /></label></details>
-        <button id="start-btn"><span aria-hidden="true">▶</span> Oturumu Başlat</button>
+        <button id="start-btn" disabled><span aria-hidden="true">▶</span> Oturumu Başlat</button>
         <p class="start-file-hint">XLSX · XLSM · CSV &nbsp; / &nbsp; Sütun adları farklıysa eşleştirebilirsin.</p>
       </div>
       <div id="loading-overlay" class="hidden" role="status"><div class="spinner"></div><div id="loading-text">Harita hazırlanıyor…</div><span class="loading-help">Diğer haritalar arka planda hazırlanır.</span></div>
@@ -56,6 +57,6 @@
 <dialog id="mapping-dialog" aria-labelledby="mapping-title"><div class="mapping-heading"><div><h2 id="mapping-title">Excel sütunlarını eşleştir</h2><p>Dosyandaki sütunları bir kez seç; bu dosya için hatırlansın.</p></div><button id="mapping-close-btn" class="edit-quiet-btn" aria-label="Kapat">✕</button></div><div id="mapping-fields"></div><p class="field-help" id="mapping-help">Eksik marka ve kategori sütunları, bir değer yazıp Tut dediğinde oluşturulur.</p><p id="mapping-error" role="alert"></p><div class="mapping-actions"><button id="mapping-save-btn" class="btn btn-primary">Eşleştirmeyi kaydet</button></div></dialog>
 <div id="completed-screen"><div class="completed-icon" aria-hidden="true">✓</div><h2 class="completed-title">Kayıtlar tamamlandı</h2><p class="completed-sub" id="completed-sub">Değişiklikler kaydedildi.</p><div class="completed-actions"><a href="/api/edit/export" id="completed-export-btn" class="btn btn-primary">Excel indir</a><button class="btn btn-secondary" onclick="location.reload()">Yeniden başla</button><a href="/" class="btn btn-secondary">Ana sayfa</a></div></div>
 <div id="toast-container"></div>
-<script src="/static/workspace_client.js?v=20261023-1"></script><script src="/static/edit_app.js?v=20261028-missing-state"></script>
+<script src="/static/workspace_client.js?v=20261028-fast-list"></script><script src="/static/edit_app.js?v=20261028-assignee"></script>
 </body>
 </html>

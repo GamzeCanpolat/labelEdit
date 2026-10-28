@@ -15,6 +15,7 @@ REST API + static file serving.
 """
 import logging
 import os
+import shutil
 import sys
 import tempfile
 from contextlib import asynccontextmanager
@@ -74,6 +75,8 @@ class AppState:
     edit_current_resolved: bool = True
     edit_is_started: bool = False
     edit_workspace_id: Optional[str] = None
+    edit_assignee: Optional[str] = None
+    edit_allowed_rows: Optional[set[int]] = None
 
 
 state = AppState()
@@ -105,6 +108,8 @@ async def _stop_edit_flow(close_data: bool) -> None:
             state.edit_data_manager.close()
             state.edit_data_manager = None
     state.edit_is_started = False
+    state.edit_assignee = None
+    state.edit_allowed_rows = None
 
 
 # ── Lifespan (startup/shutdown) ───────────────────────────────────────────────
@@ -159,6 +164,7 @@ class SessionStartRequest(BaseModel):
     start_index: int = Field(default=0, ge=0)
     source_file: Optional[str] = None
     workspace_id: Optional[str] = None
+    assignee: Optional[str] = None
 
 
 class SessionStartResponse(BaseModel):
@@ -171,6 +177,7 @@ class SessionStartResponse(BaseModel):
     workspace_id: Optional[str] = None
     columns: Optional[Dict[str, str]] = None
     warnings: list[str] = []
+    assignee: Optional[str] = None
 
 
 class EditActionRequest(BaseModel):
@@ -257,27 +264,18 @@ async def upload_workspace(
     if suffix not in (".xlsx", ".xlsm", ".csv"):
         raise HTTPException(status_code=400, detail="Yalnızca .xlsx, .xlsm ve .csv dosyaları desteklenir.")
 
-    fd, tmp_path_str = tempfile.mkstemp(suffix=suffix)
-    os.close(fd)
-    tmp_path = Path(tmp_path_str)
-
     try:
-        content = await file.read()
-        tmp_path.write_bytes(content)
-
-        ws_name = name or Path(file.filename).stem
-        ws_info = await run_in_threadpool(
-            workspace_mgr.create_workspace,
-            tmp_path,
-            name=ws_name,
-            sheet_name=sheet_name,
-        )
+        with tempfile.TemporaryDirectory(prefix="labeledit_upload_") as temp_dir:
+            tmp_path = Path(temp_dir) / Path(file.filename).name
+            with tmp_path.open("wb") as target:
+                await run_in_threadpool(shutil.copyfileobj, file.file, target)
+            ws_name = name or Path(file.filename).stem
+            ws_info = await run_in_threadpool(
+                workspace_mgr.create_workspace, tmp_path, name=ws_name, sheet_name=sheet_name)
         return JSONResponse(ws_info)
     except Exception as e:
         logger.error(f"Workspace yükleme hatası: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Yükleme hatası: {str(e)}")
-    finally:
-        _cleanup_file(str(tmp_path))
 
 
 @app.get("/api/workspaces/{ws_id}")
@@ -626,6 +624,7 @@ async def edit_start_session(request: Optional[SessionStartRequest] = None):
     try:
         start_index = request.start_index
         ws_id = request.workspace_id
+        assignee = (request.assignee or '').strip() or None
 
         if ws_id:
             ws = await run_in_threadpool(workspace_mgr.get_workspace, ws_id)
@@ -634,7 +633,9 @@ async def edit_start_session(request: Optional[SessionStartRequest] = None):
 
             state.edit_workspace_id = ws_id
             all_records = await run_in_threadpool(workspace_mgr.get_place_records, ws_id, start_index,
-                                                 status_filter="bekliyor", require_url=True)
+                                                 status_filter="bekliyor", require_url=not bool(assignee), assignee=assignee)
+            state.edit_assignee = assignee
+            state.edit_allowed_rows = {r.row_index for r in all_records} if state.edit_assignee else None
             pending_count = len(all_records)
             if pending_count == 0:
                 raise HTTPException(status_code=404, detail="Kayıt bulunamadı.")
@@ -649,7 +650,7 @@ async def edit_start_session(request: Optional[SessionStartRequest] = None):
 
             return SessionStartResponse(
                 status="started",
-                total=ws["stats"]["total"],
+                total=pending_count if assignee else ws["stats"]["total"],
                 pending=pending_count,
                 buffer_size=BUFFER_SIZE,
                 start_index=start_index,
@@ -657,9 +658,12 @@ async def edit_start_session(request: Optional[SessionStartRequest] = None):
                 workspace_id=ws_id,
                 columns=ws["column_mapping"],
                 warnings=[],
+                assignee=state.edit_assignee,
             )
 
         # Fallback to EditDataManager
+        if assignee:
+            raise HTTPException(status_code=422, detail="Kişi filtresi için veritabanından bir Excel çalışma ortamı seçin.")
         state.edit_data_manager = await run_in_threadpool(EditDataManager, request.source_file, False)
         all_records = await run_in_threadpool(state.edit_data_manager.get_place_records, start_index)
         pending_count = len(all_records)
@@ -744,7 +748,8 @@ async def edit_schema(workspace_id: Optional[str] = None):
         ws = await run_in_threadpool(workspace_mgr.get_workspace, ws_id)
         if not ws:
             raise HTTPException(status_code=404, detail="Çalışma ortamı bulunamadı.")
-        return {"workspace_id": ws_id, "columns": ws["columns"], "mapping": {
+        assignees = await run_in_threadpool(workspace_mgr.get_assignee_options, ws_id)
+        return {"workspace_id": ws_id, "columns": ws["columns"], "assignees": assignees, "mapping": {
             **ws["column_mapping"], **field_columns(ws["columns"], ws["column_mapping"])}}
     if state.edit_data_manager:
         return state.edit_data_manager.get_edit_schema()
@@ -764,6 +769,8 @@ async def edit_action(request: EditActionRequest):
     action = request.action.strip().lower()
     if action not in ("delete", "keep", "skip"):
         raise HTTPException(status_code=422, detail="Geçersiz action.")
+    if state.edit_allowed_rows is not None and request.row_index not in state.edit_allowed_rows:
+        raise HTTPException(status_code=422, detail="Bu kayıt seçilen kişinin işlem listesinde değil.")
 
     try:
         validate_fields(request.fields)
@@ -795,6 +802,8 @@ async def edit_action(request: EditActionRequest):
 
 @app.post("/api/edit/action/undo")
 async def edit_undo_action(request: EditUndoRequest):
+    if state.edit_allowed_rows is not None and request.row_index not in state.edit_allowed_rows:
+        raise HTTPException(status_code=422, detail="Bu kayıt seçilen kişinin işlem listesinde değil.")
     try:
         if state.edit_workspace_id:
             undone = await run_in_threadpool(workspace_mgr.undo_action, state.edit_workspace_id, request.row_index)
@@ -826,8 +835,11 @@ async def get_edit_status():
                 for p in worker.ready_previews()] if worker else []
     pending = 0
     if state.edit_workspace_id:
-        ws_stats = await run_in_threadpool(workspace_mgr.get_workspace_stats, state.edit_workspace_id)
-        pending = ws_stats.get("pending", 0)
+        if state.edit_assignee:
+            pending = await run_in_threadpool(workspace_mgr.get_assignee_pending_count, state.edit_workspace_id, state.edit_assignee)
+        else:
+            ws_stats = await run_in_threadpool(workspace_mgr.get_workspace_stats, state.edit_workspace_id)
+            pending = ws_stats.get("pending", 0)
     elif state.edit_data_manager:
         pending = state.edit_data_manager.get_pending_count()
 
@@ -838,6 +850,7 @@ async def get_edit_status():
         "worker_stats": stats,
         "buffer": worker.buffer_status() if worker else {},
         "previews": previews,
+        "assignee": state.edit_assignee,
     })
 
 

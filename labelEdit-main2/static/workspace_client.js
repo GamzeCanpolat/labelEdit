@@ -19,13 +19,14 @@ const WorkspaceClient = {
 
   async refreshWorkspaces() {
     try {
-      const [wsListRes, activeRes] = await Promise.all([
-        fetch('/api/workspaces').then(r => r.json()),
-        fetch('/api/workspaces/active').then(r => r.json()),
-      ]);
-
-      this.workspaces = wsListRes || [];
-      this.activeWorkspace = activeRes.active || (this.workspaces.length > 0 ? this.workspaces[0] : null);
+      const response = await fetch('/api/workspaces');
+      if (!response.ok) throw new Error('Dosya listesi alınamadı.');
+      const wsListRes = await response.json();
+      if (!Array.isArray(wsListRes)) throw new Error('Dosya listesi yanıtı geçersiz.');
+      this.workspaces = wsListRes;
+      // Liste zaten aktif kaydı işaretler; ağır dosya detayını bekleyip listeyi gizleme.
+      this.activeWorkspace = this.workspaces.find(ws => ws.is_active)
+        || this.workspaces.find(ws => ws.id === this.activeWorkspace?.id) || this.workspaces[0] || null;
 
       this.updateHeaderUI();
       this.updateStartScreenUI();

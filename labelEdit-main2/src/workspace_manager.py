@@ -19,6 +19,8 @@ import sqlite3
 import threading
 import time
 import uuid
+import xml.etree.ElementTree as ET
+from zipfile import ZipFile
 from contextlib import contextmanager
 from datetime import date, datetime, time as dtime
 from pathlib import Path
@@ -271,9 +273,11 @@ class WorkspaceManager:
             available_sheets = []
             if stored_path.exists() and stored_path.suffix.lower() in (".xlsx", ".xlsm"):
                 try:
-                    wb_tmp = openpyxl.load_workbook(stored_path, read_only=True)
-                    available_sheets = list(wb_tmp.sheetnames)
-                    wb_tmp.close()
+                    # Yalnızca küçük çalışma kitabı metadatası okunur. openpyxl burada
+                    # büyük sharedStrings.xml dosyasını da açıp tüm istekleri bekletiyordu.
+                    with ZipFile(stored_path) as archive:
+                        book = ET.fromstring(archive.read("xl/workbook.xml"))
+                    available_sheets = [sheet.attrib["name"] for sheet in book.findall("{*}sheets/{*}sheet")]
                 except Exception as e:
                     logger.warning(f"Sheets listelenirken hata: {e}")
 
@@ -334,18 +338,16 @@ class WorkspaceManager:
                 if not cur.fetchone():
                     return {"total": 0, "pending": 0, "processed": 0, "deleted": 0, "kept": 0}
 
-                total = conn.execute(f"SELECT COUNT(*) FROM {_safe_sql_col(table_name)}").fetchone()[0]
-                pending = conn.execute(f"SELECT COUNT(*) FROM {_safe_sql_col(table_name)} WHERE {_safe_sql_col(status_col)}='bekliyor'").fetchone()[0]
-                processed = conn.execute(f"SELECT COUNT(*) FROM {_safe_sql_col(table_name)} WHERE {_safe_sql_col(status_col)}='islendi'").fetchone()[0]
-                deleted = conn.execute(f"SELECT COUNT(*) FROM {_safe_sql_col(table_name)} WHERE {_safe_sql_col(status_col)}='silindi'").fetchone()[0]
-                kept = conn.execute(f"SELECT COUNT(*) FROM {_safe_sql_col(table_name)} WHERE {_safe_sql_col(status_col)}='tutuldu'").fetchone()[0]
+                counts = dict(conn.execute(
+                    f"SELECT {_safe_sql_col(status_col)}, COUNT(*) FROM {_safe_sql_col(table_name)} "
+                    f"GROUP BY {_safe_sql_col(status_col)}").fetchall())
 
                 return {
-                    "total": total,
-                    "pending": pending,
-                    "processed": processed,
-                    "deleted": deleted,
-                    "kept": kept,
+                    "total": sum(counts.values()),
+                    "pending": counts.get("bekliyor", 0),
+                    "processed": counts.get("islendi", 0),
+                    "deleted": counts.get("silindi", 0),
+                    "kept": counts.get("tutuldu", 0),
                 }
         except Exception as e:
             logger.warning(f"Stats okuma hatası {ws_id}: {e}")
@@ -794,6 +796,7 @@ class WorkspaceManager:
         limit: Optional[int] = None,
         status_filter: Optional[str] = None,
         require_url: bool = False,
+        assignee: Optional[str] = None,
     ) -> List[PlaceRecord]:
         """
         Oturum motorunun işleyeceği PlaceRecord nesnelerini SQLite tablosundan çeker.
@@ -817,8 +820,15 @@ class WorkspaceManager:
         records: List[PlaceRecord] = []
         with self._get_workspace_conn(ws_id) as conn:
             table_name, row_idx_col, status_col_name = self._get_table_info(conn)
-            query = f"SELECT * FROM {_safe_sql_col(table_name)} WHERE {_safe_sql_col(row_idx_col)} >= ?"
+            selected = list(dict.fromkeys(c for c in [row_idx_col, maps_col, name_col, status_col, status_col_name] if c))
+            query = f"SELECT {', '.join(_safe_sql_col(c) for c in selected)} FROM {_safe_sql_col(table_name)} WHERE {_safe_sql_col(row_idx_col)} >= ?"
             params: List[Any] = [start_index]
+            if assignee:
+                assignee_col = self._assignee_column(ws)
+                if not assignee_col:
+                    raise ValueError("Bu dosyada Kontrol Eden / Sorumlu sütunu bulunamadı.")
+                query += f" AND TRIM(CAST({_safe_sql_col(assignee_col)} AS TEXT)) = ?"
+                params.append(assignee.strip())
             if require_url:
                 query += f" AND TRIM(COALESCE({_safe_sql_col(maps_col)}, '')) != ''"
 
@@ -853,6 +863,42 @@ class WorkspaceManager:
                 records.append(rec)
 
         return records
+
+    @staticmethod
+    def _assignee_column(ws: dict) -> Optional[str]:
+        explicit = ws["column_mapping"].get("assignee")
+        if explicit in ws["columns"]:
+            return explicit
+        aliases = {"kontrol eden", "kontrol eden kisi", "sorumlu", "atanan", "atanan kisi",
+                   "assigned to", "assignee", "reviewer", "operator", "kullanici"}
+        return next((c for c in ws["columns"] if normalize_header(c) in aliases), None)
+
+    def get_assignee_options(self, ws_id: str) -> dict:
+        ws = self.get_workspace(ws_id)
+        if not ws:
+            raise KeyError("Çalışma ortamı bulunamadı.")
+        column = self._assignee_column(ws)
+        if not column:
+            return {"column": None, "choices": []}
+        with self._get_workspace_conn(ws_id) as conn:
+            table, _, status = self._get_table_info(conn)
+            value = f"TRIM(CAST({_safe_sql_col(column)} AS TEXT))"
+            rows = conn.execute(
+                f"SELECT {value}, COUNT(*), SUM(CASE WHEN {_safe_sql_col(status)}='bekliyor' THEN 1 ELSE 0 END) "
+                f"FROM {_safe_sql_col(table)} WHERE COALESCE({value}, '')<>'' GROUP BY {value} ORDER BY {value}"
+            ).fetchall()
+        return {"column": column, "choices": [{"value": r[0], "total": r[1], "pending": r[2]} for r in rows]}
+
+    def get_assignee_pending_count(self, ws_id: str, assignee: str) -> int:
+        ws = self.get_workspace(ws_id)
+        column = self._assignee_column(ws) if ws else None
+        if not column:
+            return 0
+        with self._get_workspace_conn(ws_id) as conn:
+            table, _, status = self._get_table_info(conn)
+            return conn.execute(
+                f"SELECT COUNT(*) FROM {_safe_sql_col(table)} WHERE {_safe_sql_col(status)}='bekliyor' "
+                f"AND TRIM(CAST({_safe_sql_col(column)} AS TEXT))=?", (assignee.strip(),)).fetchone()[0]
 
     def update_label(
         self,

@@ -60,9 +60,10 @@ class EditApiClient {
   getFields(row) { return this.request(`/api/edit/fields/${row}`); }
   saveMapping(id, mapping) { return this.request(`/api/workspaces/${encodeURIComponent(id)}/mapping`, { mapping }); }
 
-  async startSession(startIndex, workspaceId = null) {
+  async startSession(startIndex, workspaceId = null, assignee = null) {
     const body = { start_index: startIndex };
     if (workspaceId) body.workspace_id = workspaceId;
+    if (assignee) body.assignee = assignee;
     const res = await fetch(`${this._base}/api/edit/session/start`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -192,6 +193,9 @@ class EditUIController {
     this.retryMapBtn = document.getElementById('retry-map-btn');
     this.retryNextBtn = document.getElementById('retry-next-btn');
     this.schema = null;
+    this.assigneeSelect = document.getElementById('assignee-select');
+    this._assigneeWorkspaceId = null;
+    this.assignee = null;
     this.fieldLabels = { maps_url: 'Maps bağlantısı', name: 'İşletme adı', brand: 'Marka', main_category: 'Ana kategori', sub_category: 'Alt kategori', poi_state: 'İşletme durumu' };
   }
 
@@ -200,6 +204,32 @@ class EditUIController {
     this.mappingBtn.disabled = this._actionsLoading || !schema.workspace_id;
     document.getElementById('field-mapping-summary').textContent = Object.entries(this.fieldLabels)
       .map(([key, name]) => `${name}: ${schema.mapping[key] || 'Dosyada yok'}`).join('\n');
+    this.setAssigneeOptions(schema);
+  }
+
+  setAssigneeOptions(schema) {
+    const field = document.getElementById('assignee-field');
+    const hint = document.getElementById('assignee-hint');
+    const info = schema.assignees || { choices: [] };
+    let selected = this._assigneeWorkspaceId === schema.workspace_id ? this.assigneeSelect.value : null;
+    if (selected === null) {
+      const params = new URLSearchParams(location.search);
+      selected = !params.get('workspace_id') || params.get('workspace_id') === schema.workspace_id ? params.get('assignee') : null;
+      if (selected === null) {
+        try { selected = localStorage.getItem(`mapin-assignee:${schema.workspace_id}`) || ''; } catch (_) { selected = ''; }
+      }
+    }
+    this._assigneeWorkspaceId = schema.workspace_id;
+    field.hidden = !info.column && !selected;
+    this.assigneeSelect.replaceChildren(new Option('Tüm kayıtlar', ''));
+    for (const choice of info.choices) this.assigneeSelect.append(new Option(
+      `${choice.value} · ${choice.pending.toLocaleString('tr-TR')} bekleyen`, choice.value));
+    const match = info.choices.find(choice => choice.value.localeCompare(selected || '', 'tr', { sensitivity: 'base' }) === 0);
+    const missing = selected && !match;
+    this.assigneeSelect.value = match ? match.value : '';
+    if (missing) this.assigneeSelect.selectedIndex = -1;
+    hint.textContent = missing ? 'İstenen kişi bu dosyada bulunamadı. Listeden bir seçim yapın.' : 'Yalnızca seçilen kişiye atanmış kayıtlar açılır.';
+    this.startBtn.disabled = !!missing;
   }
 
   openMapping(isStarted) {
@@ -380,7 +410,7 @@ class EditUIController {
     this.urlPreview.dataset.url = data.url || '';
     this.kontrolValueText.textContent = data.kontrol_value || '—';
     document.getElementById('kontrol-section').hidden = !data.kontrol_value;
-    document.getElementById('record-id').textContent = `Kayıt ${(data.position ?? 0) + 1} / ${data.total ?? 0}`;
+    document.getElementById('record-id').textContent = `${this.assignee ? this.assignee + ' · ' : ''}Kayıt ${(data.position ?? 0) + 1} / ${data.total ?? 0}`;
 
     // Sıradaki mekan adı
     if (this.nextBusinessName) {
@@ -571,13 +601,18 @@ class EditApp {
             location.assign('/islem'); return;
           }
           this._state.set('workspace', ws);
-          this._refreshSchema(ws.id);
+          this._schemaPromise = this._refreshSchema(ws.id);
           for (const id of ['export-btn', 'completed-export-btn']) {
             document.getElementById(id).href = `/api/edit/export?workspace_id=${encodeURIComponent(ws.id)}`;
           }
         }
-      }).then(() => {
+      }).then(async () => {
         const urlParams = new URLSearchParams(window.location.search);
+        const targetWorkspace = urlParams.get('workspace_id');
+        if (targetWorkspace && window.WorkspaceClient.activeWorkspace?.id !== targetWorkspace) {
+          await window.WorkspaceClient.activateWorkspace(targetWorkspace);
+        }
+        await this._schemaPromise;
         if (urlParams.get('autostart') === '1' && !this._state.get('isStarted')) {
           setTimeout(() => this._startSession(), 100);
         }
@@ -586,6 +621,11 @@ class EditApp {
   }
 
   _bindEvents() {
+    this._ui.assigneeSelect.addEventListener('change', () => {
+      this._ui.startBtn.disabled = false;
+      document.getElementById('assignee-hint').textContent = 'Yalnızca seçilen kişiye atanmış kayıtlar açılır.';
+      try { localStorage.setItem(`mapin-assignee:${this._ui.schema.workspace_id}`, this._ui.assigneeSelect.value); } catch (_) { /* Seçim bu oturumda kullanılabilir. */ }
+    });
     this._ui.poiState.addEventListener('change', () => this._ui.updatePoiStateStyle());
     for (const input of Object.values(this._ui.editFields)) {
       input.addEventListener('input', () => {
@@ -625,11 +665,15 @@ class EditApp {
   }
 
   async _refreshSchema(id) {
+    if (!this._state.get('isStarted')) this._ui.startBtn.disabled = true;
     try {
       const schema = await this._api.getSchema(id);
       if (id && this._state.get('workspace')?.id !== id) return;
       this._ui.setSchema(schema);
-    } catch (_) { this._ui.mappingBtn.disabled = true; }
+    } catch (_) {
+      this._ui.mappingBtn.disabled = true;
+      if (!this._state.get('isStarted')) this._ui.startBtn.disabled = true;
+    }
   }
 
   async _saveMapping() {
@@ -700,10 +744,20 @@ class EditApp {
 
     const ws = window.WorkspaceClient?.activeWorkspace;
     const wsId = ws ? ws.id : null;
+    if (window.WorkspaceClient && !wsId) {
+      this._toast.error('Önce veritabanındaki bir Excel dosyasını seçin.');
+      return;
+    }
+    if (this._ui.assigneeSelect.selectedIndex < 0) {
+      this._toast.error('Kontrol eden listesinden geçerli bir seçim yapın.');
+      return;
+    }
+    const assignee = this._ui.assigneeSelect.value || null;
 
     this._ui.showStartLoading();
     try {
-      const data = await this._api.startSession(startIndex, wsId);
+      const data = await this._api.startSession(startIndex, wsId, assignee);
+      this._ui.assignee = data.assignee || assignee;
       this._api.getFieldOptions().then(options => this._ui.setFieldOptions(options))
         .catch(() => this._toast.error('Öneriler alınamadı; marka ve kategoriyi elle yazabilirsiniz.'));
       this._state.update({ isStarted: true, totalPending: data.pending });

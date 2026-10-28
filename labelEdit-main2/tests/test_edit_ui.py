@@ -21,8 +21,10 @@ def test_edit_form_keyboard_actions_and_back_navigation(initial_state, initial_s
     map_requests = Counter()
     mappings = []
     preparing_responses = [True]
+    starts = []
     schema = {"workspace_id": "test", "columns": ["name", "maps", "Marka", "Ana Kategori", "Alt Kategori", "Pol State", "Özel Marka"],
-              "mapping": {"name": "name", "maps_url": "maps", "brand": "Marka", "main_category": "Ana Kategori", "sub_category": "Alt Kategori", "poi_state": "Pol State"}}
+              "mapping": {"name": "name", "maps_url": "maps", "brand": "Marka", "main_category": "Ana Kategori", "sub_category": "Alt Kategori", "poi_state": "Pol State"},
+              "assignees": {"column": "Kontrol_Eden", "choices": [{"value": "Gamze", "total": 2, "pending": 2}, {"value": "Abdullah", "total": 1, "pending": 1}]}}
     workspace = {"id": "test", "name": "Test ortamı", "source_file": "test.xlsx",
                  "stats": {"total": 3, "pending": 3}, "column_mapping": {}}
 
@@ -33,7 +35,7 @@ def test_edit_form_keyboard_actions_and_back_navigation(initial_state, initial_s
             name = path.split("?", 1)[0].split("/")[-1]
             route.fulfill(path=str(root / "static" / name))
             return
-        if path == "/islem":
+        if path.split('?', 1)[0] == "/islem":
             route.fulfill(path=str(root / "static" / "edit.html"), content_type="text/html")
             return
         if path.startswith("/map.svg"):
@@ -45,6 +47,7 @@ def test_edit_form_keyboard_actions_and_back_navigation(initial_state, initial_s
         elif path == "/api/workspaces/active":
             data = {"active": workspace}
         elif path == "/api/edit/session/start":
+            starts.append(route.request.post_data_json)
             data = {"status": "started", "pending": 3, "start_index": 0}
         elif path == "/api/edit/field-options":
             data = {"brand": ["Marka A", "Marka B"], "main_category": ["Ev"], "sub_category": ["Mobilya"]}
@@ -84,7 +87,8 @@ def test_edit_form_keyboard_actions_and_back_navigation(initial_state, initial_s
         browser = p.chromium.launch(headless=True)
         page = browser.new_page(viewport={"width": 1440, "height": 1000})
         page.route("**/*", respond)
-        page.goto("http://labeledit.test/islem")
+        page.goto("http://labeledit.test/islem?assignee=Gamze")
+        expect(page.locator('#assignee-select')).to_have_value('Gamze')
         page.get_by_role("button", name="Oturumu Başlat").click()
         expect(page.locator("#edit-poi-state")).to_have_value(initial_selection)
         if chosen_state:
@@ -94,6 +98,8 @@ def test_edit_form_keyboard_actions_and_back_navigation(initial_state, initial_s
             expect(page.locator('#edit-poi-state')).not_to_be_visible()
             expect(page.locator('#poi-state-display')).to_be_visible()
         expect(page.locator("#buffer-text")).to_have_text("2 harita hazır")
+        assert starts[0]['assignee'] == 'Gamze'
+        expect(page.locator('#record-id')).to_contain_text('Gamze')
         page.wait_for_function("performance.getEntriesByName('http://labeledit.test/map.svg?v=1').length > 0")
         if chosen_state:
             page.locator("#edit-poi-state").select_option(chosen_state)
