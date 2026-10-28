@@ -1,458 +1,59 @@
 <!DOCTYPE html>
 <html lang="tr">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="description" content="Google Maps kayıtlarını düzenle: KONTROL kolonlu satırları incele, Sil, Atla veya Tut." />
-  <title>Mapin Etiket Sistemi — İşlem Sayfası</title>
-  <link rel="stylesheet" href="/static/style.css?v=20261023-ws" />
-  <style>
-    /* ── Düzenleme Sayfası Özel Stilleri ─────────────────────────── */
-
-    /* Info paneli kaydırmaz; tüm içerik görünür */
-    #info-panel {
-      overflow-y: auto !important;
-      display: flex;
-      flex-direction: column;
-    }
-
-    /* Harita paneli: padding ve border ile estetik görünüm */
-    #screenshot-panel {
-      padding: 16px !important;
-    }
-
-    #screenshot-container {
-      width: 100% !important;
-      height: 100% !important;
-      border: 1px solid var(--border-subtle) !important;
-      border-radius: var(--radius-lg) !important;
-      background: var(--bg-surface) !important;
-    }
-
-    #screenshot-img {
-      max-width: 100% !important;
-      max-height: 100% !important;
-      width: auto !important;
-      height: auto !important;
-      object-fit: contain !important;
-      border-radius: var(--radius-md) !important;
-    }
-
-    /* Sağ panel genişliği */
-    #info-panel {
-      width: 380px !important;
-    }
-
-    /* Üç buton — eşit genişlik, büyük boyut */
-    .btn-delete, .btn-skip, .btn-keep {
-      flex: 1;
-      padding: 18px 8px;
-      font-size: 16px;
-      font-weight: 700;
-      border-radius: 12px;
-      cursor: pointer;
-      transition: all 0.2s ease;
-      color: #fff;
-      letter-spacing: 0.4px;
-      text-align: center;
-      white-space: nowrap;
-      min-height: 58px;
-    }
-    .btn-delete {
-      border: none;
-      background: linear-gradient(135deg, #ff4757, #c0392b);
-    }
-    .btn-delete:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(255,71,87,0.45); }
-    .btn-delete:active:not(:disabled) { transform: translateY(0); }
-    .btn-delete:disabled { opacity: 0.4; cursor: not-allowed; }
-
-    .btn-skip {
-      border: 1px solid rgba(255,255,255,0.12);
-      background: linear-gradient(135deg, #475569, #334155);
-      color: #f1f5f9;
-    }
-    .btn-skip:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(71,85,105,0.4); background: linear-gradient(135deg, #64748b, #475569); }
-    .btn-skip:active:not(:disabled) { transform: translateY(0); }
-    .btn-skip:disabled { opacity: 0.4; cursor: not-allowed; }
-
-    .btn-keep {
-      border: none;
-      background: linear-gradient(135deg, #2ed573, #1abc9c);
-    }
-    .btn-keep:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(46,213,115,0.45); }
-    .btn-keep:active:not(:disabled) { transform: translateY(0); }
-    .btn-keep:disabled { opacity: 0.4; cursor: not-allowed; }
-
-    /* ── Kontrol Badge ───────────────────────────────────────────── */
-    .kontrol-badge {
-      display: inline-flex; align-items: center; gap: 6px;
-      padding: 7px 10px;
-      background: linear-gradient(135deg, rgba(255,165,0,0.12), rgba(255,140,0,0.08));
-      border: 1px solid rgba(255,165,0,0.35);
-      border-radius: 7px; color: #ffb347;
-      font-size: 12px; font-weight: 600;
-      width: 100%; box-sizing: border-box; word-break: break-word;
-    }
-    .kontrol-badge-icon { font-size: 14px; flex-shrink: 0; }
-
-    /* ── İstatistik Grid ─────────────────────────────────────────── */
-    /* 5 kolon tek satırda: Mevcut Kalan Silindi Atlandı Tutuldu */
-    .edit-stats-row {
-      display: grid;
-      grid-template-columns: repeat(5, 1fr);
-      gap: 1px;
-      background: var(--border-subtle);
-      border-top: 1px solid var(--border-subtle);
-      border-bottom: 1px solid var(--border-subtle);
-      flex-shrink: 0;
-    }
-    .edit-stat-item {
-      background: var(--bg-surface);
-      padding: 8px 4px;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 2px;
-    }
-    .edit-stat-value {
-      font-size: 18px;
-      font-weight: 700;
-      font-family: 'JetBrains Mono', monospace;
-      letter-spacing: -0.5px;
-      color: var(--text-primary);
-    }
-    .edit-stat-label {
-      font-size: 9px;
-      color: var(--text-muted);
-      text-transform: uppercase;
-      letter-spacing: 0.6px;
-      font-weight: 500;
-      white-space: nowrap;
-    }
-
-    /* ── Geçmiş ──────────────────────────────────────────────────── */
-    .edit-history-item {
-      display: flex; align-items: center; justify-content: space-between;
-      padding: 5px 10px; border-radius: 6px; margin-bottom: 3px;
-      font-size: 11px; background: var(--bg-elevated); gap: 8px;
-      border: 1px solid var(--border-subtle);
-    }
-    .edit-history-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-primary); }
-    .edit-history-action { font-weight: 700; font-size: 10px; padding: 2px 6px; border-radius: 4px; flex-shrink: 0; }
-    .edit-history-action.deleted { background: rgba(255,71,87,0.2); color: #ff4757; }
-    .edit-history-action.kept { background: rgba(46,213,115,0.2); color: #2ed573; }
-    .edit-history-action.skipped { background: rgba(148,163,184,0.2); color: #94a3b8; }
-
-    .action-shortcut-hint { font-size: 10px; color: var(--text-muted); text-align: center; padding: 4px 0 6px; }
-    .kontrol-section { margin-bottom: 0; }
-    .kontrol-label-text { font-size: 10px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 5px; }
-
-    /* ── Linkler ─────────────────────────────────────────────────── */
-    .back-link {
-      display: inline-flex; align-items: center; gap: 5px;
-      color: var(--text-muted); font-size: 11px; text-decoration: none;
-      padding: 4px 10px; border-radius: 6px; border: 1px solid var(--border-subtle);
-      transition: all 0.2s;
-    }
-    .export-link { color: #fff; background: linear-gradient(135deg, #2ed573, #17a85a); border-color: transparent; font-weight: 600; }
-    .export-link:hover { color: #fff; background: linear-gradient(135deg, #3bea84, #1fbd68); border-color: transparent; }
-    .back-link:hover { color: var(--text-primary); border-color: var(--border-accent); background: rgba(99,102,241,0.08); }
-
-    /* ── Sıradaki Mekan Kartı ────────────────────────────────────── */
-    .next-preview-card {
-      border-left: 3px solid #6366f1;
-      background: rgba(99, 102, 241, 0.08);
-      padding: 7px 12px;
-      border-radius: 7px;
-      flex-shrink: 0;
-    }
-
-    /* ── Info Panel İç Bölümler ──────────────────────────────────── */
-    .info-card {
-      padding: 12px 14px !important;
-    }
-
-    .business-name {
-      font-size: 14px !important;
-    }
-
-    .shortcuts-section {
-      padding: 10px 14px !important;
-    }
-
-    .shortcut-item {
-      font-size: 11px !important;
-    }
-
-    .history-section {
-      padding: 10px 14px !important;
-      flex: 1;
-      overflow-y: auto;
-      min-height: 0;
-    }
-
-    .history-title, .shortcut-title {
-      margin-bottom: 8px !important;
-    }
-
-    #bottom-bar {
-      padding: 0 !important;
-      width: 100% !important;
-      display: block !important;
-    }
-
-    .edit-action-bar {
-      display: flex !important;
-      gap: 12px !important;
-      padding: 12px 16px !important;
-      background: var(--bg-surface) !important;
-      border-top: 1px solid var(--border-subtle) !important;
-      width: 100% !important;
-      box-sizing: border-box !important;
-    }
-
-    .edit-fields { display: grid; gap: 10px; flex-shrink: 0; }
-    .edit-field { display: grid; gap: 5px; }
-    .edit-field .info-card-label { margin-bottom: 0; }
-    .edit-field-row { display: flex; gap: 6px; }
-    .edit-field-row input { min-width: 0; flex: 1; }
-    .edit-field-help { font-size: 11px; color: var(--text-secondary); }
-    .poi-state { display: block; padding: 9px 12px; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); font-size: 13px; }
-    .poi-state[data-state="open"] { color: var(--success); }
-    .poi-state[data-state="closed"] { color: var(--error); }
-    .history-section { flex: 0 0 auto; min-height: 80px; }
-    @media (max-width: 800px) {
-      #header { flex-wrap: wrap; padding: 10px 14px; gap: 10px; }
-      #main-content { flex-direction: column; overflow-y: auto; }
-      #screenshot-panel { flex: 0 0 50vh; min-height: 280px; }
-      #info-panel { width: 100% !important; flex: 0 0 auto; overflow-y: visible !important; }
-      .edit-action-bar { gap: 8px !important; }
-    }
-  </style>
+<meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Mapin — İşlem Sayfası</title>
+<link rel="stylesheet" href="/static/style.css?v=20261023-ws" /><link rel="stylesheet" href="/static/edit.css?v=20261028" />
 </head>
-<body>
-
+<body class="edit-page">
 <div id="app">
-
-  <!-- HEADER -->
-  <header id="header">
-    <div class="header-brand" style="gap:10px;">
-      <div style="display:flex;align-items:baseline;gap:1px;">
-        <span style="font-size:18px;font-weight:800;color:#fff;letter-spacing:-0.5px;font-family:'Inter',sans-serif;">mapin</span>
-        <span style="font-size:12px;font-weight:500;color:rgba(255,255,255,0.55);letter-spacing:0.5px;font-family:'Inter',sans-serif;margin-left:4px;">data</span>
+<header id="header">
+  <div class="edit-brand"><span class="edit-logo">mapin <small>data</small></span><span class="edit-page-name">İşlem sayfası</span></div>
+  <div class="workspace-pill" id="workspace-pill"><span aria-hidden="true">📁</span><span class="ws-pill-name" id="header-ws-name">Excel seçin</span><span class="ws-pill-badge" id="header-ws-badge">—</span><button class="ws-pill-btn" id="open-ws-modal-btn" onclick="WorkspaceClient.openWorkspaceModal()">Değiştir</button></div>
+  <nav class="header-actions" aria-label="Dosya işlemleri"><button class="edit-quiet-btn" id="column-mapping-btn" disabled>Sütunları eşleştir</button><a href="/api/edit/export" id="export-btn" class="edit-export">Excel indir ↓</a><a href="/" class="edit-quiet-btn">Ana sayfa</a></nav>
+</header>
+<main id="main-content">
+  <section id="screenshot-panel" aria-label="Google Maps görüntüsü">
+    <div class="map-toolbar"><div class="map-heading"><span>Google Maps</span><span id="progress-text">Oturum bekleniyor</span></div><div class="map-tools"><span id="buffer-indicator" class="buffer-status" role="status"><span class="buffer-light" aria-hidden="true"></span><span id="buffer-text">Haritalar oturumla hazırlanır</span></span><button class="edit-quiet-btn" id="open-url-btn" disabled>Maps’te aç ↗</button></div></div>
+    <div id="progress-bar-wrapper"><div id="progress-bar-fill"></div></div>
+    <div id="screenshot-container">
+      <div id="start-screen">
+        <div class="start-icon" aria-hidden="true">⌖</div><h1 class="start-title">Dosyanı seç, incelemeye başla</h1>
+        <p class="start-subtitle">Haritayı kontrol et. Marka ve kategoriyi düzenle.<br />Tut, Sil veya Atla ile sıradaki kayda geç.</p>
+        <div id="ws-start-card"></div>
+        <details class="start-options"><summary>Başlangıç kaydını seç</summary><label class="start-index-field" for="start-index-input"><span>Başlangıç indeksi</span><input id="start-index-input" type="text" inputmode="numeric" value="0" autocomplete="off" /></label></details>
+        <button id="start-btn"><span aria-hidden="true">▶</span> Oturumu Başlat</button>
+        <p class="start-file-hint">XLSX · XLSM · CSV &nbsp; / &nbsp; Sütun adları farklıysa eşleştirebilirsin.</p>
       </div>
-      <div style="border-left:1px solid rgba(255,255,255,0.15);padding-left:10px;">
-        <div class="brand-sub">İşlem Sayfası &mdash; Sil / Atla / Tut</div>
-      </div>
+      <div id="loading-overlay" class="hidden" role="status"><div class="spinner"></div><div id="loading-text">Harita hazırlanıyor…</div><span class="loading-help">Diğer haritalar arka planda hazırlanır.</span></div>
+      <img id="screenshot-img" alt="Geçerli işletmenin Google Maps görüntüsü" decoding="async" />
+      <div id="error-badge" role="alert"></div>
+      <button id="retry-map-btn" class="edit-quiet-btn map-retry" hidden>Görüntüyü tekrar yükle</button><button id="retry-next-btn" class="edit-quiet-btn map-retry" hidden>Tekrar dene</button>
     </div>
-
-    <!-- Çalışma Ortamı (Workspace) Seçici -->
-    <div class="workspace-pill" id="workspace-pill" title="Çalışma Ortamlarını Yönet">
-      <span class="ws-pill-icon">📁</span>
-      <span class="ws-pill-name" id="header-ws-name">Yükleniyor...</span>
-      <span class="ws-pill-badge" id="header-ws-badge">—</span>
-      <button class="ws-pill-btn" id="open-ws-modal-btn" onclick="WorkspaceClient.openWorkspaceModal()">Değiştir</button>
+    <div class="map-caption"><span class="next-caption">Sıradaki: <span id="next-business-name">—</span></span><span id="image-source">Harita görüntüsü</span></div>
+  </section>
+  <aside id="info-panel" aria-label="Kayıt bilgileri">
+    <div class="record-heading"><span class="info-card-label">İşletme</span><h2 class="business-name" id="business-name">Henüz kayıt seçilmedi</h2><span class="record-id" id="record-id">—</span></div>
+    <div class="edit-fields">
+      <div class="edit-field"><label for="edit-brand">Marka</label><div class="edit-field-row"><input class="form-input" id="edit-brand" list="brand-options" placeholder="Seç veya yeni marka yaz" autocomplete="off" disabled /><button class="edit-quiet-btn brand-picker" id="brand-select-btn" type="button" disabled aria-label="Marka seçeneklerini aç">Seç ▾</button></div><datalist id="brand-options"></datalist></div>
+      <div class="edit-field"><label for="edit-main-category">Ana kategori</label><input class="form-input" id="edit-main-category" list="main-category-options" placeholder="Seç veya yaz" autocomplete="off" disabled /><datalist id="main-category-options"></datalist></div>
+      <div class="edit-field"><label for="edit-sub-category">Alt kategori</label><input class="form-input" id="edit-sub-category" list="sub-category-options" placeholder="Seç veya yaz" autocomplete="off" disabled /><datalist id="sub-category-options"></datalist></div>
+      <div class="edit-field business-state"><span id="poi-state-label">İşletme durumu <small>Pol State</small></span><output id="edit-poi-state" aria-labelledby="poi-state-label">Bilgi yok</output></div>
+      <p class="field-help">Yazdıkların <strong>Tut</strong> ile kaydedilir.<br /><strong>Atla</strong>, değişiklikleri kaydetmeden ilerler.</p><span id="save-state" class="save-state" role="status"></span>
     </div>
-
-    <div id="progress-section">
-      <div id="progress-bar-wrapper"><div id="progress-bar-fill"></div></div>
-      <span id="progress-text">&mdash;</span>
-      <div id="buffer-indicator">
-        <span>Buf:</span>
-        <div class="buffer-dots" id="buffer-dots">
-          <div class="buffer-dot" data-dot="0"></div>
-          <div class="buffer-dot" data-dot="1"></div>
-          <div class="buffer-dot" data-dot="2"></div>
-          <div class="buffer-dot" data-dot="3"></div>
-          <div class="buffer-dot" data-dot="4"></div>
-          <div class="buffer-dot" data-dot="5"></div>
-          <div class="buffer-dot" data-dot="6"></div>
-          <div class="buffer-dot" data-dot="7"></div>
-          <div class="buffer-dot" data-dot="8"></div>
-          <div class="buffer-dot" data-dot="9"></div>
-        </div>
-      </div>
-    </div>
-
-    <div class="header-actions">
-      <button class="btn-icon btn-nav" id="back-btn" title="Önceki kayda dön (Alt + Sol Ok)" disabled>← Geri</button>
-      <a href="/api/edit/export" class="back-link export-link" id="export-btn" download title="Veritabanındaki güncel hali Excel olarak indir">&#128190; Excel'e Aktar</a>
-      <a href="/" class="back-link" style="background: rgba(99,102,241,0.18); color: #c7d2fe; border-color: rgba(99,102,241,0.35); font-weight:600;" title="Ana Sayfaya Dön (Excel Yükle / Seç)">🏠 Ana Sayfa</a>
-      <button class="btn-icon" id="open-url-btn" title="Haritayı tarayıcıda aç" disabled>&#128279;</button>
-    </div>
-  </header>
-
-  <!-- MAIN -->
-  <main id="main-content">
-
-    <section id="screenshot-panel">
-      <div id="screenshot-container">
-
-        <!-- Başlangıç Ekranı -->
-        <div id="start-screen">
-          <div class="start-icon">&#9999;&#65039;</div>
-          <h2 class="start-title">Düzenlemeye Başla</h2>
-          <p class="start-subtitle">
-            KONTROL kolonu dolu satırlar incelenir. Her kayıt için
-            <strong style="color:#ff4757">Sil</strong>,
-            <strong style="color:#94a3b8">Atla</strong> veya
-            <strong style="color:#2ed573">Tut</strong> kararı verin.
-          </p>
-
-          <!-- Aktif Çalışma Ortamı Kartı -->
-          <div id="ws-start-card" style="width: 100%; display: flex; justify-content: center;"></div>
-
-          <label class="start-index-field" for="start-index-input">
-            <span>Başlangıç indeksi</span>
-            <input id="start-index-input" type="text" value="0" autocomplete="off" />
-          </label>
-          <button id="start-btn">
-            <span>&#9654;</span> Oturumu Başlat
-          </button>
-        </div>
-
-        <!-- Loading -->
-        <div id="loading-overlay" class="hidden">
-          <div class="spinner"></div>
-          <div class="loading-text" id="loading-text">Harita yükleniyor...</div>
-        </div>
-
-        <div id="error-badge"></div>
-        <img id="screenshot-img" alt="Google Maps Screenshot" />
-      </div>
-    </section>
-
-    <!-- Sağ Bilgi Paneli -->
-    <aside id="info-panel">
-
-      <!-- İşletme Adı -->
-      <div class="info-card" style="flex-shrink:0;">
-        <div class="info-card-label">İşletme</div>
-        <div class="business-name" id="business-name">&mdash;</div>
-        <div class="url-preview" id="url-preview" title="Tıkla: URL'yi kopyala">&mdash;</div>
-      </div>
-
-      <!-- Sıradaki Mekan -->
-      <div class="next-preview-card" id="next-preview-card" style="margin:8px 14px; flex-shrink:0;">
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:3px;">
-          <span style="font-size:10px; font-weight:700; color:#818cf8; text-transform:uppercase; letter-spacing:0.6px;">⏭️ Sıradaki</span>
-          <span style="font-size:9px; background:rgba(99,102,241,0.25); color:#c7d2fe; padding:1px 5px; border-radius:4px;">Önizleme</span>
-        </div>
-        <div id="next-business-name" style="font-size:12px; font-weight:600; color:var(--text-primary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
-          &mdash;
-        </div>
-      </div>
-
-      <!-- KONTROL Değeri -->
-      <div class="info-card kontrol-section" style="flex-shrink:0;">
-        <div class="kontrol-label-text">Kontrol Notu</div>
-        <div class="kontrol-badge" id="kontrol-badge">
-          <span class="kontrol-badge-icon">&#128203;</span>
-          <span id="kontrol-value-text">&mdash;</span>
-        </div>
-      </div>
-
-      <!-- İstatistikler: 5 kolon, tek satır -->
-      <div class="info-card edit-fields" aria-label="İşletme sınıflandırması">
-        <label class="edit-field" for="edit-brand">
-          <span class="info-card-label">Marka</span>
-          <span class="edit-field-row">
-            <input class="form-input" id="edit-brand" list="brand-options" placeholder="Marka seçin veya yazın" autocomplete="off" disabled />
-            <button class="btn btn-secondary" id="brand-select-btn" type="button" disabled>Seç</button>
-          </span>
-        </label>
-        <datalist id="brand-options"></datalist>
-        <label class="edit-field" for="edit-main-category">
-          <span class="info-card-label">Ana Kategori</span>
-          <input class="form-input" id="edit-main-category" list="main-category-options" placeholder="Ana kategori seçin veya yazın" autocomplete="off" disabled />
-        </label>
-        <datalist id="main-category-options"></datalist>
-        <label class="edit-field" for="edit-sub-category">
-          <span class="info-card-label">Alt Kategori</span>
-          <input class="form-input" id="edit-sub-category" list="sub-category-options" placeholder="Alt kategori seçin veya yazın" autocomplete="off" disabled />
-        </label>
-        <datalist id="sub-category-options"></datalist>
-        <div class="edit-field">
-          <span class="info-card-label" id="poi-state-label">Pol State · İşletme Durumu</span>
-          <output class="poi-state" id="edit-poi-state" aria-labelledby="poi-state-label">Bilgi yok</output>
-        </div>
-        <p class="edit-field-help">Seçimler Tut ile kaydedilir. Atla, değişiklikleri kaydetmeden ilerler.</p>
-      </div>
-
-      <div class="edit-stats-row" style="flex-shrink:0;">
-        <div class="edit-stat-item">
-          <div class="edit-stat-value" id="stat-current">&mdash;</div>
-          <div class="edit-stat-label">Mevcut</div>
-        </div>
-        <div class="edit-stat-item">
-          <div class="edit-stat-value" id="stat-remaining">&mdash;</div>
-          <div class="edit-stat-label">Kalan</div>
-        </div>
-        <div class="edit-stat-item">
-          <div class="edit-stat-value" id="stat-deleted" style="color:#ff4757;">0</div>
-          <div class="edit-stat-label">Silindi</div>
-        </div>
-        <div class="edit-stat-item">
-          <div class="edit-stat-value" id="stat-skipped" style="color:#94a3b8;">0</div>
-          <div class="edit-stat-label">Atlandı</div>
-        </div>
-        <div class="edit-stat-item">
-          <div class="edit-stat-value" id="stat-kept" style="color:#2ed573;">0</div>
-          <div class="edit-stat-label">Tutuldu</div>
-        </div>
-      </div>
-
-      <!-- Kısayollar -->
-      <div class="shortcuts-section" style="flex-shrink:0;">
-        <div class="shortcut-title">Kısayollar</div>
-        <div class="shortcut-list">
-          <div class="shortcut-item"><span>Sil</span><span class="kbd">Del / &larr;</span></div>
-          <div class="shortcut-item"><span>Atla</span><span class="kbd">Space / &uarr;</span></div>
-          <div class="shortcut-item"><span>Tut</span><span class="kbd">Enter / &rarr;</span></div>
-          <div class="shortcut-item"><span>Geri Dön</span><span class="kbd">Alt+&larr;</span></div>
-          <div class="shortcut-item"><span>Haritayı Aç</span><span class="kbd">Ctrl+O</span></div>
-        </div>
-      </div>
-
-      <!-- Geçmiş -->
-      <div class="history-section">
-        <div class="history-title">Son İşlemler</div>
-        <div class="history-list" id="history-list">
-          <p style="font-size:11px; color: var(--text-muted); text-align:center; margin-top:12px;">
-            Henüz işlem yapılmadı
-          </p>
-        </div>
-      </div>
-
-    </aside>
-  </main>
-
-  <!-- BOTTOM BAR -->
-  <footer id="bottom-bar" style="padding: 0;">
-    <div class="edit-action-bar">
-      <button class="btn-delete" id="delete-btn" disabled>&#128465; Sil</button>
-      <button class="btn-skip" id="skip-btn" disabled>⏭ Atla</button>
-      <button class="btn-keep" id="keep-btn" disabled>&#10003; Tut</button>
-    </div>
-    <p class="action-shortcut-hint" id="action-hint">Oturumu başlatın...</p>
-  </footer>
-
+    <details class="edit-more" id="record-details"><summary>Diğer kayıt bilgileri</summary><div class="detail-content"><div id="kontrol-section"><span class="info-card-label">Kontrol notu</span><p id="kontrol-value-text">—</p></div><button id="url-preview" class="url-preview" title="Bağlantıyı kopyala">—</button><div id="field-mapping-summary" class="mapping-summary"></div></div></details>
+    <details class="edit-more"><summary>Son işlemler</summary><div id="history-list" class="detail-content"><p class="empty-history">Henüz işlem yapılmadı.</p></div></details>
+    <details class="edit-more"><summary>Klavye kısayolları</summary><div class="detail-content shortcut-list"><div class="shortcut-item"><span>Tut</span><span class="kbd">Enter / →</span></div><div class="shortcut-item"><span>Atla</span><span class="kbd">Space / ↑</span></div><div class="shortcut-item"><span>Sil</span><span class="kbd">Delete / ←</span></div><div class="shortcut-item"><span>Geri</span><span class="kbd">Alt + ←</span></div><p class="field-help">Yazı alanlarında kısayollar devreye girmez.</p></div></details>
+  </aside>
+</main>
+<footer id="bottom-bar">
+  <div class="edit-footer-meta"><button id="back-btn" class="edit-quiet-btn" disabled>← Geri al</button><span class="action-summary"><span class="sr-only" id="stat-current">0</span><span id="stat-kept">0</span> tutuldu <i>·</i> <span id="stat-skipped">0</span> atlandı <i>·</i> <span id="stat-deleted">0</span> silindi <i>·</i> <span id="stat-remaining">—</span> kalan</span><span id="action-hint">Bir dosya seçerek başlayın.</span></div>
+  <div class="edit-action-bar"><button id="delete-btn" class="btn-delete" disabled><span>Sil</span><kbd>Del</kbd></button><button id="skip-btn" class="btn-skip" disabled><span>Atla</span><kbd>Space</kbd></button><button id="keep-btn" class="btn-keep" disabled><span>✓ Tut ve ilerle</span><kbd>Enter</kbd></button></div>
+</footer>
 </div>
-
-<!-- Tamamlandı Ekranı -->
-<div id="completed-screen">
-  <div class="completed-icon">&#127881;</div>
-  <div class="completed-title">Tüm Kayıtlar İşlendi!</div>
-  <div class="completed-sub" id="completed-sub">Değişiklikler veritabanına kaydedildi.</div>
-  <div style="display:flex;gap:12px;justify-content:center;margin-top:8px;">
-    <a href="/api/edit/export" download class="btn btn-primary" style="text-decoration:none;display:inline-flex;align-items:center;">&#128190; Excel'e Aktar</a>
-    <button class="btn btn-primary" onclick="location.reload()">&#128260; Yeniden Başlat</button>
-    <a href="/" class="btn btn-secondary" style="text-decoration:none;display:inline-flex;align-items:center;">🏠 Ana Sayfaya Dön</a>
-  </div>
-</div>
-
+<dialog id="mapping-dialog" aria-labelledby="mapping-title"><div class="mapping-heading"><div><h2 id="mapping-title">Excel sütunlarını eşleştir</h2><p>Dosyandaki sütunları bir kez seç; bu dosya için hatırlansın.</p></div><button id="mapping-close-btn" class="edit-quiet-btn" aria-label="Kapat">✕</button></div><div id="mapping-fields"></div><p class="field-help" id="mapping-help">Eksik marka ve kategori sütunları, bir değer yazıp Tut dediğinde oluşturulur.</p><p id="mapping-error" role="alert"></p><div class="mapping-actions"><button id="mapping-save-btn" class="btn btn-primary">Eşleştirmeyi kaydet</button></div></dialog>
+<div id="completed-screen"><div class="completed-icon" aria-hidden="true">✓</div><h2 class="completed-title">Kayıtlar tamamlandı</h2><p class="completed-sub" id="completed-sub">Değişiklikler kaydedildi.</p><div class="completed-actions"><a href="/api/edit/export" id="completed-export-btn" class="btn btn-primary">Excel indir</a><button class="btn btn-secondary" onclick="location.reload()">Yeniden başla</button><a href="/" class="btn btn-secondary">Ana sayfa</a></div></div>
 <div id="toast-container"></div>
-<script src="/static/workspace_client.js?v=20261023-1"></script>
-<script src="/static/edit_app.js?v=20261027-fields"></script>
+<script src="/static/workspace_client.js?v=20261023-1"></script><script src="/static/edit_app.js?v=20261028-dynamic"></script>
 </body>
 </html>

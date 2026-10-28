@@ -47,6 +47,7 @@ class ScreenshotWorker:
         self._next_schedule = 0
         self._running = False
         self._stats = {"taken": 0, "errors": 0, "cache_hits": 0, "timeouts": 0}
+        self._serve_lock = asyncio.Lock()
 
     # Geriye dönük uyumluluk: main.py eski sürümde bu alanı okuyordu
     @property
@@ -96,30 +97,39 @@ class ScreenshotWorker:
             active += 1
 
     # ── Public API ───────────────────────────────────────────────────────────
-    async def get_next(self) -> Optional[ScreenshotItem]:
+    async def get_next(self, wait_timeout: Optional[float] = None,
+                       consume_on_timeout: bool = True) -> Optional[ScreenshotItem]:
+        async with self._serve_lock:
+            return await self._get_next(wait_timeout, consume_on_timeout)
+
+    async def _get_next(self, wait_timeout: Optional[float], consume_on_timeout: bool) -> Optional[ScreenshotItem]:
         if self._next_serve >= len(self._records):
             return None
         pos = self._next_serve
-        self._next_serve += 1
         rec = self._records[pos]
-        task = self._tasks.pop(pos, None)
-        self._fill()
+        task = self._tasks.get(pos)
         if task is None:   # pencere dışı (olmamalı) → doğrudan iste
             task = asyncio.ensure_future(self._session.engine.capture(rec))
+            self._tasks[pos] = task
+            task.add_done_callback(self._fill)
         try:
-            out: CaptureOutcome = await asyncio.wait_for(asyncio.shield(task), timeout=GET_NEXT_TIMEOUT)
+            out: CaptureOutcome = await asyncio.wait_for(
+                asyncio.shield(task), timeout=GET_NEXT_TIMEOUT if wait_timeout is None else wait_timeout)
         except asyncio.TimeoutError:
+            if not consume_on_timeout:
+                return None  # Sıra ve yakalama görevi korunur; istemci kısa aralıkla tekrar sorar.
             # Yakalama arka planda sürer ve tamamlanınca önbelleğe yazılır
             self._stats["timeouts"] += 1
             out = CaptureOutcome(rec.place_key, rec.url,
                                  error=f"{GET_NEXT_TIMEOUT:.0f} sn içinde hazırlanamadı (arka planda deneniyor)")
         except asyncio.CancelledError:
-            if not self._running:
-                raise
-            out = CaptureOutcome(rec.place_key, rec.url, error="İptal edildi")
+            raise
         except Exception as e:
             out = CaptureOutcome(rec.place_key, rec.url, error=str(e)[:200])
 
+        self._tasks.pop(pos, None)
+        self._next_serve += 1
+        self._fill()
         if out.ok:
             self._stats["taken"] += 1
             if out.from_cache:
@@ -139,10 +149,33 @@ class ScreenshotWorker:
         n = 0
         for pos in range(self._next_serve, min(len(self._records), self._next_serve + self._window)):
             t = self._tasks.get(pos)
-            if t is None or not t.done():
+            if not self._task_ok(t):
                 break
             n += 1
         return n
+
+    @staticmethod
+    def _task_ok(task) -> bool:
+        return bool(task and task.done() and not task.cancelled()
+                    and task.exception() is None and task.result().ok)
+
+    def buffer_status(self) -> dict:
+        end = min(len(self._records), self._next_serve + self._window)
+        tasks = [self._tasks.get(pos) for pos in range(self._next_serve, end)]
+        return {"ready": self.queue_size(), "capacity": len(tasks),
+                "preparing": sum(t is not None and not t.done() for t in tasks),
+                "failed": sum(t is not None and t.done() and not self._task_ok(t) for t in tasks)}
+
+    def ready_previews(self, limit: int = 3) -> list[dict]:
+        previews = []
+        for pos in range(self._next_serve, min(len(self._records), self._next_serve + limit)):
+            task = self._tasks.get(pos)
+            if not self._task_ok(task):
+                break
+            rec, outcome = self._records[pos], task.result()
+            previews.append({"row_index": rec.row_index, "name": rec.name,
+                             "file_path": outcome.file_path})
+        return previews
 
     def is_empty(self) -> bool:
         return self._next_serve >= len(self._records)
@@ -152,6 +185,7 @@ class ScreenshotWorker:
         return {
             **self._stats,
             "queue_size": self.queue_size(),
+            "buffer": self.buffer_status(),
             "fetch_index": self._next_schedule,
             "engine": engine.stats() if engine else None,
         }
